@@ -194,11 +194,23 @@ func TestVerify_ReadinessTransportError(t *testing.T) {
 	assert.ErrorContains(t, cmd.Run(), "failed to reach Access server")
 }
 
-func TestVerify_ReferenceToken(t *testing.T) {
+func TestVerify_NotJWT_ReferenceTokenHint(t *testing.T) {
 	_, fake := validSetup(t)
-	cmd := newTestCommand("cmVmdGtuOjAxOjA6YWJj", fake)
-	assert.ErrorContains(t, cmd.Run(), "reference token")
-	assert.Zero(t, fake.rootCalls)
+	cmd := newTestCommand("opaqueValueWithoutDots", fake)
+	err := cmd.Run()
+	assert.ErrorContains(t, err, "not a JWT access token")
+	assert.ErrorContains(t, err, "reference token")
+	assert.Zero(t, fake.rootCalls+fake.readinessCalls)
+}
+
+func TestVerify_MalformedJWT_NoReferenceTokenHint(t *testing.T) {
+	for _, raw := range []string{"a.b.c", "abc.def", "a.b.c.d"} {
+		_, fake := validSetup(t)
+		err := newTestCommand(raw, fake).Run()
+		assert.ErrorContains(t, err, "failed to parse token", raw)
+		assert.NotContains(t, err.Error(), "reference token", raw)
+		assert.Zero(t, fake.rootCalls+fake.readinessCalls, raw)
+	}
 }
 
 func TestVerify_ApiKey(t *testing.T) {

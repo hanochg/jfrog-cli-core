@@ -15,9 +15,8 @@ import (
 )
 
 const (
-	referenceTokenPrefix = "cmVmdGtu"
-	rootCertificateCall  = "GET /access/api/v1/cert/root"
-	readinessCall        = "GET /access/api/v1/system/readiness"
+	rootCertificateCall = "GET /access/api/v1/cert/root"
+	readinessCall       = "GET /access/api/v1/system/readiness"
 )
 
 type AccessTokenVerifyResult struct {
@@ -97,15 +96,9 @@ func (c *AccessTokenVerifyCommand) Run() error {
 }
 
 func (c *AccessTokenVerifyCommand) verify() error {
-	if httpclient.IsApiKey(c.token) {
-		return errorutils.CheckErrorf("the provided value is an API key, not an access token")
-	}
-	if strings.HasPrefix(c.token, referenceTokenPrefix) {
-		return errorutils.CheckErrorf("the provided value is a reference token, which cannot be decoded locally; verify the JWT access token instead")
-	}
 	parsed, err := accesstoken.ParseToken(c.token)
 	if err != nil {
-		return errorutils.CheckErrorf("failed to parse token: %s", err.Error())
+		return notAccessTokenError(c.token, err)
 	}
 	c.result.Header = &parsed.Header
 	c.result.Payload = parsed.Claims
@@ -136,6 +129,17 @@ func (c *AccessTokenVerifyCommand) verify() error {
 	}
 	c.result.Types = IdentifyTokenTypes(parsed)
 	return nil
+}
+
+func notAccessTokenError(token string, parseErr error) error {
+	switch {
+	case httpclient.IsApiKey(token):
+		return errorutils.CheckErrorf("the provided value is an API key, not an access token")
+	case !strings.Contains(token, "."):
+		return errorutils.CheckErrorf("the provided value is not a JWT access token; reference tokens can't be decoded locally, so verify the JWT access token instead")
+	default:
+		return errorutils.CheckErrorf("failed to parse token: %s", parseErr.Error())
+	}
 }
 
 func verifySignature(client accessClient, token string) error {
