@@ -73,12 +73,13 @@ func validClaims(now time.Time) map[string]interface{} {
 }
 
 type fakeAccessClient struct {
-	cert           string
-	rootErr        error
-	status         int
-	readinessErr   error
-	rootCalls      int
-	readinessCalls int
+	cert         string
+	rootErr      error
+	status       int
+	details      map[string]interface{}
+	detailsErr   error
+	rootCalls    int
+	detailsCalls int
 }
 
 func (f *fakeAccessClient) GetRootCertificate() (string, error) {
@@ -86,9 +87,12 @@ func (f *fakeAccessClient) GetRootCertificate() (string, error) {
 	return f.cert, f.rootErr
 }
 
-func (f *fakeAccessClient) CheckReadiness() (int, error) {
-	f.readinessCalls++
-	return f.status, f.readinessErr
+func (f *fakeAccessClient) GetOwnTokenDetails() (int, map[string]interface{}, error) {
+	f.detailsCalls++
+	if f.status != http.StatusOK {
+		return f.status, nil, f.detailsErr
+	}
+	return f.status, f.details, f.detailsErr
 }
 
 func newTestCommand(token string, fake *fakeAccessClient) *AccessTokenVerifyCommand {
@@ -100,7 +104,8 @@ func newTestCommand(token string, fake *fakeAccessClient) *AccessTokenVerifyComm
 
 func validSetup(t *testing.T) (*rsa.PrivateKey, *fakeAccessClient) {
 	certB64, key := generateTestCert(t)
-	return key, &fakeAccessClient{cert: certB64, status: http.StatusOK}
+	details := map[string]interface{}{"token_id": "id-1", "subject": testUserSub, "scope": "applied-permissions/user"}
+	return key, &fakeAccessClient{cert: certB64, status: http.StatusOK, details: details}
 }
 
 func TestVerify_ValidIdentityToken(t *testing.T) {
@@ -109,7 +114,8 @@ func TestVerify_ValidIdentityToken(t *testing.T) {
 	require.NoError(t, cmd.Run())
 	assert.True(t, cmd.Result().Valid)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
-	assert.Equal(t, 1, fake.readinessCalls)
+	assert.Equal(t, TokenFormatJWT, cmd.Result().Format)
+	assert.Equal(t, 1, fake.detailsCalls)
 }
 
 func TestVerify_InvalidHeader_NoNetworkCalls(t *testing.T) {
@@ -118,7 +124,7 @@ func TestVerify_InvalidHeader_NoNetworkCalls(t *testing.T) {
 	header["ver"] = "1"
 	cmd := newTestCommand(signToken(t, key, header, validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), `expected ver "2"`)
-	assert.Zero(t, fake.rootCalls+fake.readinessCalls)
+	assert.Zero(t, fake.rootCalls+fake.detailsCalls)
 	assert.NotNil(t, cmd.Result().Payload)
 }
 
@@ -136,23 +142,23 @@ func TestVerify_BadSignature_TokenNotSentToServer(t *testing.T) {
 	_, otherKey := generateTestCert(t)
 	cmd := newTestCommand(signToken(t, otherKey, validHeader(), validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), "invalid signature")
-	assert.Zero(t, fake.readinessCalls)
+	assert.Zero(t, fake.detailsCalls)
 }
 
-func TestVerify_MissingSub_BeforeReadiness(t *testing.T) {
+func TestVerify_MissingSub_BeforeServerCheck(t *testing.T) {
 	key, fake := validSetup(t)
 	claims := validClaims(testNow)
 	delete(claims, "sub")
 	cmd := newTestCommand(signToken(t, key, validHeader(), claims), fake)
 	assert.ErrorContains(t, cmd.Run(), "missing required field: sub")
-	assert.Zero(t, fake.readinessCalls)
+	assert.Zero(t, fake.detailsCalls)
 }
 
-func TestVerify_Expired_BeforeReadiness(t *testing.T) {
+func TestVerify_Expired_BeforeServerCheck(t *testing.T) {
 	key, fake := validSetup(t)
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow.Add(-2*time.Hour))), fake)
 	assert.ErrorContains(t, cmd.Run(), "token expired at")
-	assert.Zero(t, fake.readinessCalls)
+	assert.Zero(t, fake.detailsCalls)
 	assert.Nil(t, cmd.Result().Types)
 }
 
@@ -170,37 +176,88 @@ func TestVerify_RootCertFetchFails(t *testing.T) {
 	assert.ErrorContains(t, cmd.Run(), "GET /access/api/v1/cert/root")
 }
 
-func TestVerify_ReadinessRejected(t *testing.T) {
+func TestVerify_ServerRejectsJWT(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
 		key, fake := validSetup(t)
 		fake.status = status
 		cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-		assert.EqualError(t, cmd.Run(), fmt.Sprintf("token rejected by Access server: status %d from GET /access/api/v1/system/readiness", status))
+		assert.EqualError(t, cmd.Run(), fmt.Sprintf("token rejected by Access server: status %d from GET /access/api/v1/tokens/me", status))
 		assert.False(t, cmd.Result().Valid)
+		assert.Equal(t, TokenFormatJWT, cmd.Result().Format)
 	}
 }
 
-func TestVerify_ReadinessUnexpectedStatus(t *testing.T) {
+func TestVerify_ServerUnexpectedStatus(t *testing.T) {
 	key, fake := validSetup(t)
 	fake.status = http.StatusServiceUnavailable
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), "unexpected response from Access server: status 503")
 }
 
-func TestVerify_ReadinessTransportError(t *testing.T) {
+func TestVerify_ServerCallFails(t *testing.T) {
 	key, fake := validSetup(t)
-	fake.readinessErr = errors.New("connection refused")
+	fake.detailsErr = errors.New("connection refused")
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "failed to reach Access server")
+	assert.ErrorContains(t, cmd.Run(), "failed to check the token with Access server (GET /access/api/v1/tokens/me): connection refused")
 }
 
-func TestVerify_NotJWT_ReferenceTokenHint(t *testing.T) {
+func TestVerify_ReferenceToken_Valid(t *testing.T) {
 	_, fake := validSetup(t)
-	cmd := newTestCommand("opaqueValueWithoutDots", fake)
-	err := cmd.Run()
-	assert.ErrorContains(t, err, "not a JWT access token")
-	assert.ErrorContains(t, err, "reference token")
-	assert.Zero(t, fake.rootCalls+fake.readinessCalls)
+	cmd := newTestCommand("opaqueReferenceValue", fake)
+	require.NoError(t, cmd.Run())
+	result := cmd.Result()
+	assert.True(t, result.Valid)
+	assert.Equal(t, TokenFormatReference, result.Format)
+	assert.Equal(t, fake.details, result.Payload)
+	assert.Nil(t, result.Header)
+	assert.Equal(t, []TokenType{TokenTypeIdentity}, result.Types)
+	assert.Zero(t, fake.rootCalls)
+	assert.Equal(t, 1, fake.detailsCalls)
+}
+
+func TestVerify_ReferenceToken_Rejected(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		_, fake := validSetup(t)
+		fake.status = status
+		cmd := newTestCommand("opaqueReferenceValue", fake)
+		assert.EqualError(t, cmd.Run(), fmt.Sprintf("the provided value isn't a JWT, and the Access server didn't accept it as a reference token: status %d from GET /access/api/v1/tokens/me", status))
+		assert.False(t, cmd.Result().Valid)
+		assert.Empty(t, cmd.Result().Format)
+		assert.Nil(t, cmd.Result().Payload)
+	}
+}
+
+func TestVerify_ReferenceToken_ServerFailures(t *testing.T) {
+	_, fake := validSetup(t)
+	fake.status = http.StatusServiceUnavailable
+	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "unexpected response from Access server: status 503")
+
+	_, fake = validSetup(t)
+	fake.detailsErr = errors.New("connection refused")
+	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "failed to check the token with Access server")
+
+	_, fake = validSetup(t)
+	cmd := newTestCommand("opaqueReferenceValue", fake)
+	cmd.SetServerDetails(&config.ServerDetails{})
+	assert.ErrorContains(t, cmd.Run(), "no JFrog server")
+	assert.Zero(t, fake.detailsCalls)
+}
+
+func TestVerify_ReferenceToken_TypesFromServerDetails(t *testing.T) {
+	for _, tc := range []struct {
+		details map[string]interface{}
+		want    []TokenType
+	}{
+		{map[string]interface{}{"subject": "jfrt@01h", "scope": AdminScope}, []TokenType{TokenTypeInternal}},
+		{map[string]interface{}{"subject": "my_token", "scope": GroupsScopePrefix + "readers"}, []TokenType{TokenTypeGroups}},
+		{map[string]interface{}{"token_id": "id-1"}, nil},
+	} {
+		_, fake := validSetup(t)
+		fake.details = tc.details
+		cmd := newTestCommand("opaqueReferenceValue", fake)
+		require.NoError(t, cmd.Run())
+		assert.Equal(t, tc.want, cmd.Result().Types, tc.details)
+	}
 }
 
 func TestVerify_MalformedJWT_NoReferenceTokenHint(t *testing.T) {
@@ -209,27 +266,29 @@ func TestVerify_MalformedJWT_NoReferenceTokenHint(t *testing.T) {
 		err := newTestCommand(raw, fake).Run()
 		assert.ErrorContains(t, err, "failed to parse token", raw)
 		assert.NotContains(t, err.Error(), "reference token", raw)
-		assert.Zero(t, fake.rootCalls+fake.readinessCalls, raw)
+		assert.Zero(t, fake.rootCalls+fake.detailsCalls, raw)
 	}
 }
 
-func TestVerify_ApiKey(t *testing.T) {
+func TestVerify_ApiKeyIsCheckedLikeAReferenceToken(t *testing.T) {
 	_, fake := validSetup(t)
+	fake.status = http.StatusUnauthorized
 	cmd := newTestCommand("AKCp8"+strings.Repeat("x", 68), fake)
-	assert.ErrorContains(t, cmd.Run(), "API key")
-	assert.Zero(t, fake.rootCalls)
+	assert.ErrorContains(t, cmd.Run(), "didn't accept it as a reference token")
+	assert.Equal(t, 1, fake.detailsCalls)
 }
 
 func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 	t.Setenv(coreutils.HomeDir, t.TempDir())
 	certB64, key := generateTestCert(t)
-	var readinessAuth []string
+	var detailsAuth []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/access/api/v1/cert/root":
 			_, _ = w.Write([]byte(certB64))
-		case "/access/api/v1/system/readiness":
-			readinessAuth = append(readinessAuth, r.Header.Get("Authorization"))
+		case "/access/api/v1/tokens/me":
+			detailsAuth = append(detailsAuth, r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"token_id":"id-1","subject":"jfac@01h/users/alice","scope":"applied-permissions/user"}`))
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusTeapot)
@@ -261,16 +320,17 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 		"1h lifetime, 20m left": nearExpiry(time.Hour, 20*time.Minute),
 		"no exp":                signToken(t, key, validHeader(), noExpiry),
 		"profile's own token":   profileToken,
+		"reference token":       "opaqueReferenceValue",
 	} {
 		t.Run(name, func(t *testing.T) {
-			readinessAuth = nil
+			detailsAuth = nil
 			profile, err := config.GetSpecificConfig("login", true, true)
 			require.NoError(t, err)
 
 			start := time.Now()
 			require.NoError(t, NewAccessTokenVerifyCommand().SetServerDetails(profile).SetToken(token).Run())
 			assert.Less(t, time.Since(start), 5*time.Second)
-			assert.Equal(t, []string{"Bearer " + token}, readinessAuth)
+			assert.Equal(t, []string{"Bearer " + token}, detailsAuth)
 
 			saved, err := config.GetSpecificConfig("login", true, false)
 			require.NoError(t, err)
@@ -309,7 +369,7 @@ func TestInsecureConnectionWarning(t *testing.T) {
 	assert.Empty(t, insecureConnectionWarning(&config.ServerDetails{Url: "https://x/"}))
 	warning := insecureConnectionWarning(&config.ServerDetails{Url: "http://x/"})
 	assert.Contains(t, warning, "http://")
-	assert.Contains(t, warning, "can't prove the root certificate")
+	assert.Contains(t, warning, "unencrypted")
 }
 
 func TestVerify_ServerDetailsHasNoRefreshTokens(t *testing.T) {

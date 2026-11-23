@@ -1,6 +1,7 @@
 package token
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -9,19 +10,27 @@ import (
 	rtUtils "github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-client-go/auth/accesstoken"
-	"github.com/jfrog/jfrog-client-go/http/httpclient"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 const (
 	rootCertificateCall = "GET /access/api/v1/cert/root"
-	readinessCall       = "GET /access/api/v1/system/readiness"
+	tokenDetailsCall    = "GET /access/api/v1/tokens/me"
 )
 
+type TokenFormat string
+
+const (
+	TokenFormatJWT       TokenFormat = "JWT"
+	TokenFormatReference TokenFormat = "Reference"
+)
+
+// For a reference token, Payload holds the token details the Access server returned.
 type AccessTokenVerifyResult struct {
 	Valid   bool                   `json:"valid"`
 	Error   string                 `json:"error,omitempty"`
+	Format  TokenFormat            `json:"format,omitempty"`
 	Header  *accesstoken.Header    `json:"header,omitempty"`
 	Payload map[string]interface{} `json:"payload,omitempty"`
 	Types   []TokenType            `json:"types,omitempty"`
@@ -29,7 +38,7 @@ type AccessTokenVerifyResult struct {
 
 type accessClient interface {
 	GetRootCertificate() (string, error)
-	CheckReadiness() (int, error)
+	GetOwnTokenDetails() (int, map[string]interface{}, error)
 }
 
 type AccessTokenVerifyCommand struct {
@@ -95,23 +104,26 @@ func (c *AccessTokenVerifyCommand) Run() error {
 	return nil
 }
 
+// A value without the dots of a JWT can't be checked locally, so the server is asked whether it's a reference token.
 func (c *AccessTokenVerifyCommand) verify() error {
+	if !strings.Contains(c.token, ".") {
+		return c.verifyReferenceToken()
+	}
+	return c.verifyJWT()
+}
+
+func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	parsed, err := accesstoken.ParseToken(c.token)
 	if err != nil {
-		return notAccessTokenError(c.token, err)
+		return errorutils.CheckErrorf("failed to parse token: %s", err.Error())
 	}
+	c.result.Format = TokenFormatJWT
 	c.result.Header = &parsed.Header
 	c.result.Payload = parsed.Claims
 	if err = accesstoken.ValidateHeader(parsed.Header); err != nil {
 		return err
 	}
-	if c.serverDetails == nil || c.serverDetails.Url == "" {
-		return errorutils.CheckErrorf("no JFrog server with a platform URL is configured; run 'jf config add'")
-	}
-	if warning := insecureConnectionWarning(c.serverDetails); warning != "" {
-		log.Warn(warning)
-	}
-	client, err := c.newAccessClient(tokenUnderTestDetails(c.serverDetails, c.token))
+	client, err := c.createAccessClient()
 	if err != nil {
 		return err
 	}
@@ -124,22 +136,46 @@ func (c *AccessTokenVerifyCommand) verify() error {
 	if err = accesstoken.ValidateExpiration(parsed.Payload, c.now()); err != nil {
 		return err
 	}
-	if err = checkReadiness(client); err != nil {
+	if _, err = getTokenDetails(client); err != nil {
 		return err
 	}
 	c.result.Types = IdentifyTokenTypes(parsed)
 	return nil
 }
 
-func notAccessTokenError(token string, parseErr error) error {
-	switch {
-	case httpclient.IsApiKey(token):
-		return errorutils.CheckErrorf("the provided value is an API key, not an access token")
-	case !strings.Contains(token, "."):
-		return errorutils.CheckErrorf("the provided value is not a JWT access token; reference tokens can't be decoded locally, so verify the JWT access token instead")
-	default:
-		return errorutils.CheckErrorf("failed to parse token: %s", parseErr.Error())
+func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
+	client, err := c.createAccessClient()
+	if err != nil {
+		return err
 	}
+	details, err := getTokenDetails(client)
+	var rejected tokenRejectedError
+	if errors.As(err, &rejected) {
+		return errorutils.CheckErrorf("the provided value isn't a JWT, and the Access server didn't accept it as a reference token: status %d from %s", rejected.status, tokenDetailsCall)
+	}
+	if err != nil {
+		return err
+	}
+	c.result.Format = TokenFormatReference
+	c.result.Payload = details
+	c.result.Types = IdentifyTokenTypes(referenceTokenAsParsed(details))
+	return nil
+}
+
+func (c *AccessTokenVerifyCommand) createAccessClient() (accessClient, error) {
+	if c.serverDetails == nil || c.serverDetails.Url == "" {
+		return nil, errorutils.CheckErrorf("no JFrog server with a platform URL is configured; run 'jf config add'")
+	}
+	if warning := insecureConnectionWarning(c.serverDetails); warning != "" {
+		log.Warn(warning)
+	}
+	return c.newAccessClient(tokenUnderTestDetails(c.serverDetails, c.token))
+}
+
+func referenceTokenAsParsed(details map[string]interface{}) *accesstoken.ParsedToken {
+	subject, _ := details["subject"].(string)
+	scope, _ := details["scope"].(string)
+	return &accesstoken.ParsedToken{Payload: accesstoken.Payload{Sub: subject, Scp: scope}}
 }
 
 func verifySignature(client accessClient, token string) error {
@@ -154,17 +190,23 @@ func verifySignature(client accessClient, token string) error {
 	return accesstoken.ValidateSignature(token, key)
 }
 
-func checkReadiness(client accessClient) error {
-	status, err := client.CheckReadiness()
+type tokenRejectedError struct{ status int }
+
+func (e tokenRejectedError) Error() string {
+	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, tokenDetailsCall)
+}
+
+func getTokenDetails(client accessClient) (map[string]interface{}, error) {
+	status, details, err := client.GetOwnTokenDetails()
 	switch {
 	case err != nil:
-		return errorutils.CheckErrorf("failed to reach Access server (%s): %s", readinessCall, err.Error())
+		return nil, errorutils.CheckErrorf("failed to check the token with Access server (%s): %s", tokenDetailsCall, err.Error())
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return errorutils.CheckErrorf("token rejected by Access server: status %d from %s", status, readinessCall)
+		return nil, errorutils.CheckError(tokenRejectedError{status: status})
 	case status != http.StatusOK:
-		return errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, readinessCall)
+		return nil, errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, tokenDetailsCall)
 	}
-	return nil
+	return details, nil
 }
 
 // Starts from blank details: copying the profile would carry its refresh token, and the refresh hook
@@ -183,5 +225,5 @@ func insecureConnectionWarning(details *config.ServerDetails) string {
 	if !strings.HasPrefix(strings.ToLower(details.Url), "http://") {
 		return ""
 	}
-	return fmt.Sprintf("The server URL %s uses http://, so the signature check can't prove the root certificate came from your JFrog server.", details.Url)
+	return fmt.Sprintf("The server URL %s uses http://, so the token is sent unencrypted, and the server's answers can't be proven to come from your JFrog server.", details.Url)
 }
