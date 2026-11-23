@@ -243,12 +243,32 @@ func TestVerify_ReferenceToken_ServerFailures(t *testing.T) {
 	assert.Zero(t, fake.detailsCalls)
 }
 
+func TestVerify_TypesComeFromScopesOnly(t *testing.T) {
+	for _, tc := range []struct {
+		sub, scp, ext string
+		want          []TokenType
+	}{
+		{"jfrt@01ftqhpvg3kn760kg8qbt411qy", AdminScope, `{"revocable":"true"}`, []TokenType{TokenTypeAdmin}},
+		{"jfrt@01ftqhpvg3kn760kg8qbt411qy/nodes/n1", "api:*", `{"revocable":"true"}`, []TokenType{TokenTypeScoped}},
+		{"jffe@000/users/admin", "applied-permissions/groups:readers", `{"sid":"s1","revocable":true}`, []TokenType{TokenTypeGroups}},
+		{"jffe@000", "internal:impersonation/user/admin " + AdminScope, `{"sid":"s1"}`, []TokenType{TokenTypeInternal, TokenTypeAdmin}},
+	} {
+		key, fake := validSetup(t)
+		claims := validClaims(testNow)
+		claims["sub"], claims["scp"], claims["ext"] = tc.sub, tc.scp, tc.ext
+		cmd := newTestCommand(signToken(t, key, validHeader(), claims), fake)
+		require.NoError(t, cmd.Run(), tc.sub)
+		assert.Equal(t, tc.want, cmd.Result().Types, tc.sub)
+	}
+}
+
 func TestVerify_ReferenceToken_TypesFromServerDetails(t *testing.T) {
 	for _, tc := range []struct {
 		details map[string]interface{}
 		want    []TokenType
 	}{
-		{map[string]interface{}{"subject": "jfrt@01h", "scope": AdminScope}, []TokenType{TokenTypeInternal}},
+		{map[string]interface{}{"subject": "jfrt@01h", "scope": AdminScope}, []TokenType{TokenTypeAdmin}},
+		{map[string]interface{}{"subject": "jfrt@01h", "scope": `internal:x:r "applied-permissions/groups:group 1"`}, []TokenType{TokenTypeInternal, TokenTypeGroups}},
 		{map[string]interface{}{"subject": "my_token", "scope": GroupsScopePrefix + "readers"}, []TokenType{TokenTypeGroups}},
 		{map[string]interface{}{"token_id": "id-1"}, nil},
 	} {

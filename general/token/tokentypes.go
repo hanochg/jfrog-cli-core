@@ -15,6 +15,7 @@ const (
 	TokenTypeIdentity       TokenType = "Identity Token"
 	TokenTypeGroups         TokenType = "Applied Permissions Groups Token"
 	TokenTypeRoles          TokenType = "Applied Permissions Roles Token"
+	TokenTypeEntitlements   TokenType = "Applied Permissions Entitlements Token"
 	TokenTypeScoped         TokenType = "Scoped Token"
 	TokenTypeConnectPairing TokenType = "Connect Pairing Token"
 	TokenTypeConnectDevice  TokenType = "Connect Device Token"
@@ -22,39 +23,30 @@ const (
 	TokenTypeUnknown        TokenType = "Unknown Token Type"
 
 	userScope                 = "applied-permissions/user"
+	userScopePrefix           = userScope + ":"
 	rolesScopePrefix          = "applied-permissions/roles:"
+	entitlementsScopePrefix   = "applied-permissions/entitlements:"
+	legacyGroupsScopePrefix   = "member-of-groups:"
+	legacyUserScope           = legacyGroupsScopePrefix + "*"
+	legacyApiScope            = "api:*"
 	connectPairingScopePrefix = "internal:connect-agent-trust/pairing:"
 	connectDeviceScopePrefix  = "internal:connect-agent-trust/device:"
 	internalScopePrefix       = "internal:"
 )
 
-var (
-	serviceSubjectPattern = regexp.MustCompile(`^[a-z]{4,6}@[a-zA-Z0-9*]+(/nodes/[^/]+)?$`)
-	scopedTokenPattern    = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*:.+:[a-zA-Z*]+$`)
-)
+// The resource permission scope format <type>:<resource>:<actions> from the JFrog dictionary.
+var resourceScopePattern = regexp.MustCompile(`^(?:[a-zA-Z_-]+|\*):(?:\*|[^:/@]+(?:@[^:/]+)?(?:/[^:]+)?):(?:\*|[rwdamsx](?:,[rwdamsx])*)$`)
 
-// Connect tokens are internal but reported by name. Any other internal signal hides the remaining types behind a single Internal Token.
-func IdentifyTokenTypes(t *accesstoken.ParsedToken) []TokenType {
+// The types come from the scopes alone, each listed once in the order of its first scope.
+func IdentifyTokenTypes(scp string) []TokenType {
+	payload := accesstoken.Payload{Scp: scp}
 	var types []TokenType
-	for _, scope := range t.Payload.Scopes() {
-		if tokenType := classifyScope(scope); !slices.Contains(types, tokenType) {
+	for _, scope := range payload.Scopes() {
+		if tokenType := classifyScope(accesstoken.UnquoteScope(scope)); !slices.Contains(types, tokenType) {
 			types = append(types, tokenType)
 		}
 	}
-	if !hasInternalSubject(t) && !slices.Contains(types, TokenTypeInternal) {
-		return types
-	}
-	var visible []TokenType
-	for _, tokenType := range types {
-		if tokenType == TokenTypeConnectPairing || tokenType == TokenTypeConnectDevice {
-			visible = append(visible, tokenType)
-		}
-	}
-	return append(visible, TokenTypeInternal)
-}
-
-func hasInternalSubject(t *accesstoken.ParsedToken) bool {
-	return serviceSubjectPattern.MatchString(t.Payload.Sub) || (t.ParsedExt != nil && t.ParsedExt.Sid != "")
+	return types
 }
 
 func classifyScope(scope string) TokenType {
@@ -67,13 +59,15 @@ func classifyScope(scope string) TokenType {
 		return TokenTypeInternal
 	case scope == AdminScope:
 		return TokenTypeAdmin
-	case scope == userScope:
+	case scope == userScope, strings.HasPrefix(scope, userScopePrefix), scope == legacyUserScope:
 		return TokenTypeIdentity
-	case strings.HasPrefix(scope, GroupsScopePrefix):
+	case strings.HasPrefix(scope, GroupsScopePrefix), strings.HasPrefix(scope, legacyGroupsScopePrefix):
 		return TokenTypeGroups
 	case strings.HasPrefix(scope, rolesScopePrefix):
 		return TokenTypeRoles
-	case scopedTokenPattern.MatchString(scope):
+	case strings.HasPrefix(scope, entitlementsScopePrefix):
+		return TokenTypeEntitlements
+	case scope == legacyApiScope, resourceScopePattern.MatchString(scope):
 		return TokenTypeScoped
 	default:
 		return TokenTypeUnknown

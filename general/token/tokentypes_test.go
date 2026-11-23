@@ -3,99 +3,88 @@ package token
 import (
 	"testing"
 
-	"github.com/jfrog/jfrog-client-go/auth/accesstoken"
 	"github.com/stretchr/testify/assert"
 )
 
 const testUserSub = "jfac@01ftqhpvg3kn760kg8qbt411qy/users/admin"
 
-func makeParsed(sub, scp string, ext *accesstoken.ParsedExt) *accesstoken.ParsedToken {
-	return &accesstoken.ParsedToken{
-		Payload:   accesstoken.Payload{Sub: sub, Scp: scp, Iss: "jfac@01ftqhpvg3kn760kg8qbt411qy"},
-		ParsedExt: ext,
-	}
-}
-
-func TestIdentify_AdminToken(t *testing.T) {
-	assert.Equal(t, []TokenType{TokenTypeAdmin}, IdentifyTokenTypes(makeParsed("my_token", AdminScope, nil)))
-}
-
-func TestIdentify_IdentityToken(t *testing.T) {
-	assert.Equal(t, []TokenType{TokenTypeIdentity}, IdentifyTokenTypes(makeParsed(testUserSub, "applied-permissions/user", nil)))
-}
-
-func TestIdentify_AppliedPermissionsGroupsToken(t *testing.T) {
-	parsed := makeParsed("my_token", "applied-permissions/groups:readers,writers", nil)
-	assert.Equal(t, []TokenType{TokenTypeGroups}, IdentifyTokenTypes(parsed))
-}
-
-func TestIdentify_ScopedToken(t *testing.T) {
-	assert.Equal(t, []TokenType{TokenTypeScoped}, IdentifyTokenTypes(makeParsed("my_token", "system:metrics:r", nil)))
-}
-
-func TestIdentify_MultiScopeToken(t *testing.T) {
-	parsed := makeParsed(testUserSub, "applied-permissions/user system:metrics:r", nil)
-	assert.Equal(t, []TokenType{TokenTypeIdentity, TokenTypeScoped}, IdentifyTokenTypes(parsed))
-}
-
-func TestIdentify_UnknownScope(t *testing.T) {
-	parsed := makeParsed("my_token", "something-not-matching-any-rule", nil)
-	assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(parsed))
-}
-
-func TestIdentify_Internal(t *testing.T) {
-	for _, parsed := range []*accesstoken.ParsedToken{
-		makeParsed(testUserSub, "internal:x:r", nil),
-		makeParsed(testUserSub, "applied-permissions/user internal:x:r", nil),
-		makeParsed("abcd@01h", AdminScope, nil),
-		makeParsed("abcd@01h/nodes/n1", "api:*", nil),
-		makeParsed("abcd@01h/users/alice", "applied-permissions/user", &accesstoken.ParsedExt{Sid: "s1"}),
-	} {
-		assert.Equal(t, []TokenType{TokenTypeInternal}, IdentifyTokenTypes(parsed), "sub %q scp %q", parsed.Payload.Sub, parsed.Payload.Scp)
-	}
-}
-
-func TestIdentify_NotInternal(t *testing.T) {
-	for _, tc := range []struct {
-		parsed *accesstoken.ParsedToken
-		want   []TokenType
-	}{
-		{makeParsed("jfac@01h/users/admin", AdminScope, nil), []TokenType{TokenTypeAdmin}},
-		{makeParsed("my_token", AdminScope, nil), []TokenType{TokenTypeAdmin}},
-		{makeParsed(testUserSub, "applied-permissions/user", &accesstoken.ParsedExt{Revocable: "true"}), []TokenType{TokenTypeIdentity}},
-	} {
-		assert.Equal(t, tc.want, IdentifyTokenTypes(tc.parsed), "sub %q scp %q", tc.parsed.Payload.Sub, tc.parsed.Payload.Scp)
-	}
-}
-
-func TestIdentify_GroupsPrefix(t *testing.T) {
-	assert.Equal(t, []TokenType{TokenTypeGroups}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/groups:readers,writers", nil)))
-	assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/group:readers", nil)))
-}
-
-func TestIdentify_ConnectTokens(t *testing.T) {
-	const deviceSub = "jfcapi@01h/devices/d1"
+func TestIdentify_SingleScope(t *testing.T) {
 	for _, tc := range []struct {
 		scope string
-		want  []TokenType
+		want  TokenType
 	}{
-		{"internal:connect-agent-trust/pairing:x", []TokenType{TokenTypeConnectPairing}},
-		{"internal:connect-agent-trust/device:x", []TokenType{TokenTypeConnectDevice}},
+		{AdminScope, TokenTypeAdmin},
+		{"applied-permissions/user", TokenTypeIdentity},
+		{"applied-permissions/user:piggy", TokenTypeIdentity},
+		{"member-of-groups:*", TokenTypeIdentity},
+		{"applied-permissions/groups:readers,writers", TokenTypeGroups},
+		{"member-of-groups:readers,qa", TokenTypeGroups},
+		{"applied-permissions/roles:proj1:developer,viewer", TokenTypeRoles},
+		{"applied-permissions/entitlements:/follow-ext/", TokenTypeEntitlements},
+		{"system:metrics:r", TokenTypeScoped},
+		{"artifact:generic-local/foo/bar.txt:r,w", TokenTypeScoped},
+		{"repo:my-repo@proj1:r,w,d", TokenTypeScoped},
+		{"*:*:*", TokenTypeScoped},
+		{"api:*", TokenTypeScoped},
+		{"internal:x:r", TokenTypeInternal},
+		{"internal:impersonation/user/laUser", TokenTypeInternal},
+		{"internal:connect-agent-trust/pairing:x", TokenTypeConnectPairing},
+		{"internal:connect-agent-trust/device:x", TokenTypeConnectDevice},
+		{"internal:connect-agent-trust/devices:x", TokenTypeInternal},
+		{"something-not-matching-any-rule", TokenTypeUnknown},
+		{"applied-permissions/group:readers", TokenTypeUnknown},
+		{"applied-permissions/role:proj1:developer", TokenTypeUnknown},
+		{"applied-permissions/users", TokenTypeUnknown},
+		{"ui:*", TokenTypeUnknown},
+		{"api:ha-propagate", TokenTypeUnknown},
+		{"internal-sync", TokenTypeUnknown},
+		{"jfrt@1b161a7c:admin", TokenTypeUnknown},
+		{"system:metrics:q", TokenTypeUnknown},
+	} {
+		assert.Equal(t, []TokenType{tc.want}, IdentifyTokenTypes(tc.scope), tc.scope)
+	}
+}
+
+func TestIdentify_QuotedScopes(t *testing.T) {
+	for _, tc := range []struct {
+		scp  string
+		want []TokenType
+	}{
+		{`applied-permissions/groups:group_1,"group 2"`, []TokenType{TokenTypeGroups}},
+		{`"applied-permissions/groups:group_1, group 2"`, []TokenType{TokenTypeGroups}},
+		{`applied-permissions/groups:"group_1, group 2" applied-permissions/admin`, []TokenType{TokenTypeGroups, TokenTypeAdmin}},
+		{`applied-permissions/roles:proj1:"lead dev","qa"`, []TokenType{TokenTypeRoles}},
+		{`artifact:"generic-local/foo/bar baz/bla.txt":r,w`, []TokenType{TokenTypeScoped}},
+		{`"artifact:generic-local/foo/bar baz/bla.txt:r,w"`, []TokenType{TokenTypeScoped}},
+		{`"artifact:myrepo/foo\"bar.txt:r"`, []TokenType{TokenTypeScoped}},
+		{`"internal:x:r"`, []TokenType{TokenTypeInternal}},
+	} {
+		assert.Equal(t, tc.want, IdentifyTokenTypes(tc.scp), tc.scp)
+	}
+}
+
+func TestIdentify_MultipleScopes(t *testing.T) {
+	for _, tc := range []struct {
+		scp  string
+		want []TokenType
+	}{
+		{"applied-permissions/user system:metrics:r", []TokenType{TokenTypeIdentity, TokenTypeScoped}},
+		{"internal:x:r " + AdminScope, []TokenType{TokenTypeInternal, TokenTypeAdmin}},
+		{AdminScope + " internal:x:r internal:y:w", []TokenType{TokenTypeAdmin, TokenTypeInternal}},
+		{"*:*:* system:*:*", []TokenType{TokenTypeScoped}},
 		{"internal:connect-agent-trust/device:x internal:connect-agent-trust/pairing:y", []TokenType{TokenTypeConnectDevice, TokenTypeConnectPairing}},
 		{"internal:connect-agent-trust/device:x applied-permissions/user", []TokenType{TokenTypeConnectDevice, TokenTypeIdentity}},
 		{"internal:connect-agent-trust/device:x internal:x:r", []TokenType{TokenTypeConnectDevice, TokenTypeInternal}},
-		{"internal:connect-agent-trust/devices:x", []TokenType{TokenTypeInternal}},
+		{"applied-permissions/roles:proj1:developer applied-permissions/groups:readers member-of-groups:qa", []TokenType{TokenTypeRoles, TokenTypeGroups}},
+		{"ui:* api:*", []TokenType{TokenTypeUnknown, TokenTypeScoped}},
 	} {
-		assert.Equal(t, tc.want, IdentifyTokenTypes(makeParsed(deviceSub, tc.scope, nil)), tc.scope)
+		assert.Equal(t, tc.want, IdentifyTokenTypes(tc.scp), tc.scp)
 	}
-	withSid := makeParsed(deviceSub, "internal:connect-agent-trust/device:x applied-permissions/user", &accesstoken.ParsedExt{Sid: "s1"})
-	assert.Equal(t, []TokenType{TokenTypeConnectDevice, TokenTypeInternal}, IdentifyTokenTypes(withSid))
 }
 
-func TestIdentify_RolesToken(t *testing.T) {
-	assert.Equal(t, []TokenType{TokenTypeRoles}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/roles:proj1:developer,viewer", nil)))
-	assert.Equal(t, []TokenType{TokenTypeRoles, TokenTypeGroups}, IdentifyTokenTypes(makeParsed(testUserSub, "applied-permissions/roles:proj1:developer applied-permissions/groups:readers", nil)))
-	assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/role:proj1:developer", nil)))
+func TestIdentify_NoScopes(t *testing.T) {
+	assert.Nil(t, IdentifyTokenTypes(""))
+	assert.Nil(t, IdentifyTokenTypes(`  ""  `))
 }
 
 func TestIdentify_AtcScopes(t *testing.T) {
@@ -108,6 +97,6 @@ func TestIdentify_AtcScopes(t *testing.T) {
 		{GroupsScopePrefix + "readers" + " " + AdminScope, []TokenType{TokenTypeGroups, TokenTypeAdmin}},
 		{"system:metrics:r", []TokenType{TokenTypeScoped}},
 	} {
-		assert.Equal(t, tc.want, IdentifyTokenTypes(makeParsed(testUserSub, tc.scope, nil)), tc.scope)
+		assert.Equal(t, tc.want, IdentifyTokenTypes(tc.scope), tc.scope)
 	}
 }

@@ -139,7 +139,7 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	if _, err = getTokenDetails(client); err != nil {
 		return err
 	}
-	c.result.Types = IdentifyTokenTypes(parsed)
+	c.result.Types = IdentifyTokenTypes(parsed.Payload.Scp)
 	return nil
 }
 
@@ -158,7 +158,8 @@ func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
 	}
 	c.result.Format = TokenFormatReference
 	c.result.Payload = details
-	c.result.Types = IdentifyTokenTypes(referenceTokenAsParsed(details))
+	scope, _ := details["scope"].(string)
+	c.result.Types = IdentifyTokenTypes(scope)
 	return nil
 }
 
@@ -170,12 +171,6 @@ func (c *AccessTokenVerifyCommand) createAccessClient() (accessClient, error) {
 		log.Warn(warning)
 	}
 	return c.newAccessClient(tokenUnderTestDetails(c.serverDetails, c.token))
-}
-
-func referenceTokenAsParsed(details map[string]interface{}) *accesstoken.ParsedToken {
-	subject, _ := details["subject"].(string)
-	scope, _ := details["scope"].(string)
-	return &accesstoken.ParsedToken{Payload: accesstoken.Payload{Sub: subject, Scp: scope}}
 }
 
 func verifySignature(client accessClient, token string) error {
