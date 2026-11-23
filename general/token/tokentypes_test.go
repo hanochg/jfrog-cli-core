@@ -73,6 +73,31 @@ func TestIdentify_GroupsPrefix(t *testing.T) {
 	assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/group:readers", nil)))
 }
 
+func TestIdentify_ConnectTokens(t *testing.T) {
+	const deviceSub = "jfcapi@01h/devices/d1"
+	for _, tc := range []struct {
+		scope string
+		want  []TokenType
+	}{
+		{"internal:connect-agent-trust/pairing:x", []TokenType{TokenTypeConnectPairing}},
+		{"internal:connect-agent-trust/device:x", []TokenType{TokenTypeConnectDevice}},
+		{"internal:connect-agent-trust/device:x internal:connect-agent-trust/pairing:y", []TokenType{TokenTypeConnectDevice, TokenTypeConnectPairing}},
+		{"internal:connect-agent-trust/device:x applied-permissions/user", []TokenType{TokenTypeConnectDevice, TokenTypeIdentity}},
+		{"internal:connect-agent-trust/device:x internal:x:r", []TokenType{TokenTypeConnectDevice, TokenTypeInternal}},
+		{"internal:connect-agent-trust/devices:x", []TokenType{TokenTypeInternal}},
+	} {
+		assert.Equal(t, tc.want, IdentifyTokenTypes(makeParsed(deviceSub, tc.scope, nil)), tc.scope)
+	}
+	withSid := makeParsed(deviceSub, "internal:connect-agent-trust/device:x applied-permissions/user", &accesstoken.ParsedExt{Sid: "s1"})
+	assert.Equal(t, []TokenType{TokenTypeConnectDevice, TokenTypeInternal}, IdentifyTokenTypes(withSid))
+}
+
+func TestIdentify_RolesToken(t *testing.T) {
+	assert.Equal(t, []TokenType{TokenTypeRoles}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/roles:proj1:developer,viewer", nil)))
+	assert.Equal(t, []TokenType{TokenTypeRoles, TokenTypeGroups}, IdentifyTokenTypes(makeParsed(testUserSub, "applied-permissions/roles:proj1:developer applied-permissions/groups:readers", nil)))
+	assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(makeParsed("my_token", "applied-permissions/role:proj1:developer", nil)))
+}
+
 func TestIdentify_AtcScopes(t *testing.T) {
 	for _, tc := range []struct {
 		scope string
