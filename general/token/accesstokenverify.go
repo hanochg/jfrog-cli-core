@@ -168,7 +168,7 @@ func (c *AccessTokenVerifyCommand) createAccessClient() (accessClient, error) {
 	if warning := insecureConnectionWarning(c.serverDetails); warning != "" {
 		log.Warn(warning)
 	}
-	return c.newAccessClient(tokenUnderTestDetails(c.serverDetails, c.token))
+	return c.newAccessClient(tokenUnderInvestigationDetails(c.serverDetails, c.token))
 }
 
 func verifySignature(client accessClient, token string) error {
@@ -203,8 +203,8 @@ func getTokenDetails(client accessClient) (map[string]interface{}, error) {
 }
 
 // Starts from blank details: copying the profile would carry its refresh token, and the refresh hook
-// could then send the profile's own token instead of the one under test.
-func tokenUnderTestDetails(profile *config.ServerDetails, token string) *config.ServerDetails {
+// could then send the profile's own token instead of the one under investigation.
+func tokenUnderInvestigationDetails(profile *config.ServerDetails, token string) *config.ServerDetails {
 	details := new(config.ServerDetails)
 	details.Url = profile.Url
 	details.ClientCertPath = profile.ClientCertPath

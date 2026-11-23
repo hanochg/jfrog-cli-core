@@ -362,7 +362,7 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 	}
 }
 
-func TestTokenUnderTestDetails_KeepsOnlyUrlAndClientCert(t *testing.T) {
+func TestTokenUnderInvestigationDetails_KeepsOnlyUrlAndClientCert(t *testing.T) {
 	profile := &config.ServerDetails{
 		ServerId:                "p",
 		Url:                     "https://jpd.example/",
@@ -384,7 +384,7 @@ func TestTokenUnderTestDetails_KeepsOnlyUrlAndClientCert(t *testing.T) {
 		ClientCertKeyPath:   "ck",
 		AccessToken:         "token",
 		DisableTokenRefresh: true,
-	}, tokenUnderTestDetails(profile, "token"))
+	}, tokenUnderInvestigationDetails(profile, "token"))
 }
 
 func TestInsecureConnectionWarning(t *testing.T) {

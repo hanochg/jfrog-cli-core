@@ -51,13 +51,13 @@ func TestVerify_Exec_UsageReportingNeverRefreshes(t *testing.T) {
 		IsDefault:      true,
 	}}))
 
-	for name, tokenUnderTest := range map[string]string{"another token": nearExpiry(), "profile's own token": profileToken, "reference token": "opaqueReferenceValue"} {
+	for name, tokenUnderInvestigation := range map[string]string{"another token": nearExpiry(), "profile's own token": profileToken, "reference token": "opaqueReferenceValue"} {
 		t.Run(name, func(t *testing.T) {
 			profile, err := config.GetSpecificConfig("login", true, true)
 			require.NoError(t, err)
 
 			start := time.Now()
-			require.NoError(t, commands.Exec(token.NewAccessTokenVerifyCommand().SetServerDetails(profile).SetToken(tokenUnderTest)))
+			require.NoError(t, commands.Exec(token.NewAccessTokenVerifyCommand().SetServerDetails(profile).SetToken(tokenUnderInvestigation)))
 			assert.Less(t, time.Since(start), 5*time.Second)
 
 			saved, err := config.GetSpecificConfig("login", true, false)
