@@ -26,7 +26,6 @@ const (
 	TokenFormatReference TokenFormat = "Reference"
 )
 
-// For a reference token, Payload holds the token details the Access server returned.
 type AccessTokenVerifyResult struct {
 	Valid   bool                   `json:"valid"`
 	Error   string                 `json:"error,omitempty"`
@@ -104,7 +103,6 @@ func (c *AccessTokenVerifyCommand) Run() error {
 	return nil
 }
 
-// A value without the dots of a JWT can't be checked locally, so the server is asked whether it's a reference token.
 func (c *AccessTokenVerifyCommand) verify() error {
 	if !strings.Contains(c.token, ".") {
 		return c.verifyReferenceToken()

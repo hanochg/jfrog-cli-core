@@ -34,10 +34,8 @@ const (
 	internalScopePrefix       = "internal:"
 )
 
-// The resource permission scope format <type>:<resource>:<actions> from the JFrog dictionary.
 var resourceScopePattern = regexp.MustCompile(`^(?:[a-zA-Z_-]+|\*):(?:\*|[^:/@]+(?:@[^:/]+)?(?:/[^:]+)?):(?:\*|[rwdamsx](?:,[rwdamsx])*)$`)
 
-// The types come from the scopes alone, each listed once in the order of its first scope.
 func IdentifyTokenTypes(scp string) []TokenType {
 	payload := accesstoken.Payload{Scp: scp}
 	var types []TokenType
@@ -45,6 +43,9 @@ func IdentifyTokenTypes(scp string) []TokenType {
 		if tokenType := classifyScope(accesstoken.UnquoteScope(scope)); !slices.Contains(types, tokenType) {
 			types = append(types, tokenType)
 		}
+	}
+	if len(types) == 0 {
+		return []TokenType{TokenTypeUnknown}
 	}
 	return types
 }

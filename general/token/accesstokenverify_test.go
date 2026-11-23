@@ -270,7 +270,9 @@ func TestVerify_ReferenceToken_TypesFromServerDetails(t *testing.T) {
 		{map[string]interface{}{"subject": "jfrt@01h", "scope": AdminScope}, []TokenType{TokenTypeAdmin}},
 		{map[string]interface{}{"subject": "jfrt@01h", "scope": `internal:x:r "applied-permissions/groups:group 1"`}, []TokenType{TokenTypeInternal, TokenTypeGroups}},
 		{map[string]interface{}{"subject": "my_token", "scope": GroupsScopePrefix + "readers"}, []TokenType{TokenTypeGroups}},
-		{map[string]interface{}{"token_id": "id-1"}, nil},
+		{map[string]interface{}{"token_id": "id-1"}, []TokenType{TokenTypeUnknown}},
+		{map[string]interface{}{"token_id": "id-1", "scope": []interface{}{"applied-permissions/user"}}, []TokenType{TokenTypeUnknown}},
+		{map[string]interface{}{"token_id": "id-1", "scope": " "}, []TokenType{TokenTypeUnknown}},
 	} {
 		_, fake := validSetup(t)
 		fake.details = tc.details

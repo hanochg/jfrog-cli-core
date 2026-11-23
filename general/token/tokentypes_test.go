@@ -83,8 +83,9 @@ func TestIdentify_MultipleScopes(t *testing.T) {
 }
 
 func TestIdentify_NoScopes(t *testing.T) {
-	assert.Nil(t, IdentifyTokenTypes(""))
-	assert.Nil(t, IdentifyTokenTypes(`  ""  `))
+	for _, scp := range []string{"", "   ", `  ""  `} {
+		assert.Equal(t, []TokenType{TokenTypeUnknown}, IdentifyTokenTypes(scp), scp)
+	}
 }
 
 func TestIdentify_AtcScopes(t *testing.T) {
