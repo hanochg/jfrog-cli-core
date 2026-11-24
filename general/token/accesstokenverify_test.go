@@ -201,6 +201,28 @@ func TestVerify_ServerRejectsJWT(t *testing.T) {
 	}
 }
 
+func TestVerify_ArtifactoryRejectsTokenOutsideItsAudience(t *testing.T) {
+	for _, tc := range []struct {
+		aud  interface{}
+		want string
+	}{
+		{"jfxr@*", "token rejected by Artifactory: status 401 from GET /artifactory/api/system/version. The token's audience (jfxr@*) doesn't include Artifactory"},
+		{[]interface{}{"jfxr@01h", "jfmc@*"}, "The token's audience (jfxr@01h jfmc@*) doesn't include Artifactory"},
+		{"*@*", "token revoked: status 401"},
+		{"jfrt@*", "token revoked: status 401"},
+		{"jfrt@01h jfxr@*", "token revoked: status 401"},
+		{[]interface{}{"jfxr@*", "jfrt@01h"}, "token revoked: status 401"},
+		{"*", "token revoked: status 401"},
+	} {
+		key, fake := validSetup(t)
+		fake.version = http.StatusUnauthorized
+		claims := validClaims(testNow)
+		claims["aud"] = tc.aud
+		cmd := newTestCommand(signToken(t, key, validHeader(), claims), fake)
+		assert.ErrorContains(t, cmd.Run(), tc.want, tc.aud)
+	}
+}
+
 func TestVerify_ServerUnexpectedStatus(t *testing.T) {
 	key, fake := validSetup(t)
 	fake.version = http.StatusServiceUnavailable

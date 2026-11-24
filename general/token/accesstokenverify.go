@@ -17,6 +17,7 @@ import (
 const (
 	rootCertificateCall    = "GET /access/api/v1/cert/root"
 	tokenDetailsCall       = "GET /access/api/v1/tokens/me"
+	artifactoryServiceType = "jfrt"
 	artifactoryVersionCall = "GET /artifactory/api/system/version"
 )
 
@@ -138,7 +139,23 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 		return err
 	}
 	status, err := client.CheckArtifactoryVersion()
-	return checkServerAnswer(status, err, artifactoryVersionCall)
+	err = checkServerAnswer(status, err, artifactoryVersionCall)
+	var rejected tokenRejectedError
+	if audiences := parsed.Payload.AudAsStringSlice(); errors.As(err, &rejected) && !audienceIncludesArtifactory(audiences) {
+		return errorutils.CheckErrorf("token rejected by Artifactory: status %d from %s. The token's audience (%s) doesn't include Artifactory, which is the likely reason; the token may still be valid for that audience", rejected.status, artifactoryVersionCall, strings.Join(audiences, " "))
+	}
+	return err
+}
+
+func audienceIncludesArtifactory(audiences []string) bool {
+	for _, entry := range audiences {
+		for _, audience := range strings.Fields(entry) {
+			if service, _, _ := strings.Cut(audience, "@"); service == "*" || service == artifactoryServiceType {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
