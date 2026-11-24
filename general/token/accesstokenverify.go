@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	rootCertificateCall = "GET /access/api/v1/cert/root"
-	tokenDetailsCall    = "GET /access/api/v1/tokens/me"
-	systemVersionCall   = "GET /access/api/v1/system/version"
+	rootCertificateCall    = "GET /access/api/v1/cert/root"
+	tokenDetailsCall       = "GET /access/api/v1/tokens/me"
+	artifactoryVersionCall = "GET /artifactory/api/system/version"
 )
 
 type TokenFormat string
@@ -38,7 +38,7 @@ type AccessTokenVerifyResult struct {
 
 type accessClient interface {
 	GetRootCertificate() (string, error)
-	CheckSystemVersion() (int, error)
+	CheckArtifactoryVersion() (int, error)
 	GetOwnTokenDetails() (int, map[string]interface{}, error)
 }
 
@@ -137,8 +137,8 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	if err = accesstoken.ValidateExpiration(parsed.Payload, c.now()); err != nil {
 		return err
 	}
-	status, err := client.CheckSystemVersion()
-	return checkServerAnswer(status, err, systemVersionCall)
+	status, err := client.CheckArtifactoryVersion()
+	return checkServerAnswer(status, err, artifactoryVersionCall)
 }
 
 func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
@@ -193,7 +193,7 @@ func (e tokenRejectedError) Error() string {
 	if e.revoked {
 		return fmt.Sprintf("token revoked: status %d from %s", e.status, e.call)
 	}
-	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, e.call)
+	return fmt.Sprintf("token rejected by the JFrog server: status %d from %s", e.status, e.call)
 }
 
 func getTokenDetails(client accessClient) (map[string]interface{}, error) {
@@ -207,12 +207,12 @@ func getTokenDetails(client accessClient) (map[string]interface{}, error) {
 func checkServerAnswer(status int, err error, call string) error {
 	switch {
 	case err != nil:
-		return errorutils.CheckErrorf("failed to check the token with Access server (%s): %s", call, err.Error())
+		return errorutils.CheckErrorf("failed to check the token with the JFrog server (%s): %s", call, err.Error())
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		revoked := status == http.StatusUnauthorized || call == systemVersionCall
+		revoked := status == http.StatusUnauthorized || call == artifactoryVersionCall
 		return errorutils.CheckError(tokenRejectedError{status: status, call: call, revoked: revoked})
 	case status != http.StatusOK:
-		return errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, call)
+		return errorutils.CheckErrorf("unexpected response from the JFrog server: status %d from %s", status, call)
 	}
 	return nil
 }

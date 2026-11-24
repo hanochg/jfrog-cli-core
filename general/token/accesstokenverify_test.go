@@ -72,20 +72,20 @@ func validClaims(now time.Time) map[string]interface{} {
 }
 
 type fakeAccessClient struct {
-	cert               string
-	rootErr            error
-	status             int
-	details            map[string]interface{}
-	detailsErr         error
-	rootCalls          int
-	detailsCalls       int
-	version            int
-	versionErr         error
-	systemVersionCalls int
+	cert                    string
+	rootErr                 error
+	status                  int
+	details                 map[string]interface{}
+	detailsErr              error
+	rootCalls               int
+	detailsCalls            int
+	version                 int
+	versionErr              error
+	artifactoryVersionCalls int
 }
 
-func (f *fakeAccessClient) CheckSystemVersion() (int, error) {
-	f.systemVersionCalls++
+func (f *fakeAccessClient) CheckArtifactoryVersion() (int, error) {
+	f.artifactoryVersionCalls++
 	return f.version, f.versionErr
 }
 
@@ -122,7 +122,7 @@ func TestVerify_ValidIdentityToken(t *testing.T) {
 	assert.True(t, cmd.Result().Valid)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 	assert.Equal(t, TokenFormatJWT, cmd.Result().Format)
-	assert.Equal(t, 1, fake.systemVersionCalls)
+	assert.Equal(t, 1, fake.artifactoryVersionCalls)
 	assert.Zero(t, fake.detailsCalls)
 }
 
@@ -132,7 +132,7 @@ func TestVerify_InvalidHeader_NoNetworkCalls(t *testing.T) {
 	header["ver"] = "1"
 	cmd := newTestCommand(signToken(t, key, header, validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), `expected ver "2"`)
-	assert.Zero(t, fake.rootCalls+fake.systemVersionCalls+fake.detailsCalls)
+	assert.Zero(t, fake.rootCalls+fake.artifactoryVersionCalls+fake.detailsCalls)
 	assert.NotNil(t, cmd.Result().Payload)
 }
 
@@ -150,7 +150,7 @@ func TestVerify_BadSignature_TokenNotSentToServer(t *testing.T) {
 	_, otherKey := generateTestCert(t)
 	cmd := newTestCommand(signToken(t, otherKey, validHeader(), validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), "invalid signature")
-	assert.Zero(t, fake.systemVersionCalls+fake.detailsCalls)
+	assert.Zero(t, fake.artifactoryVersionCalls+fake.detailsCalls)
 }
 
 func TestVerify_MissingSub_BeforeServerCheck(t *testing.T) {
@@ -159,14 +159,14 @@ func TestVerify_MissingSub_BeforeServerCheck(t *testing.T) {
 	delete(claims, "sub")
 	cmd := newTestCommand(signToken(t, key, validHeader(), claims), fake)
 	assert.ErrorContains(t, cmd.Run(), "missing required field: sub")
-	assert.Zero(t, fake.systemVersionCalls+fake.detailsCalls)
+	assert.Zero(t, fake.artifactoryVersionCalls+fake.detailsCalls)
 }
 
 func TestVerify_Expired_BeforeServerCheck(t *testing.T) {
 	key, fake := validSetup(t)
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow.Add(-2*time.Hour))), fake)
 	assert.ErrorContains(t, cmd.Run(), "token expired at")
-	assert.Zero(t, fake.systemVersionCalls+fake.detailsCalls)
+	assert.Zero(t, fake.artifactoryVersionCalls+fake.detailsCalls)
 	assert.False(t, cmd.Result().Valid)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 }
@@ -187,8 +187,8 @@ func TestVerify_RootCertFetchFails(t *testing.T) {
 
 func TestVerify_ServerRejectsJWT(t *testing.T) {
 	for status, want := range map[int]string{
-		http.StatusUnauthorized: "token revoked: status 401 from GET /access/api/v1/system/version",
-		http.StatusForbidden:    "token revoked: status 403 from GET /access/api/v1/system/version",
+		http.StatusUnauthorized: "token revoked: status 401 from GET /artifactory/api/system/version",
+		http.StatusForbidden:    "token revoked: status 403 from GET /artifactory/api/system/version",
 	} {
 		key, fake := validSetup(t)
 		fake.version = status
@@ -205,14 +205,14 @@ func TestVerify_ServerUnexpectedStatus(t *testing.T) {
 	key, fake := validSetup(t)
 	fake.version = http.StatusServiceUnavailable
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "unexpected response from Access server: status 503 from GET /access/api/v1/system/version")
+	assert.ErrorContains(t, cmd.Run(), "unexpected response from the JFrog server: status 503 from GET /artifactory/api/system/version")
 }
 
 func TestVerify_ServerCallFails(t *testing.T) {
 	key, fake := validSetup(t)
 	fake.versionErr = errors.New("connection refused")
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "failed to check the token with Access server (GET /access/api/v1/system/version): connection refused")
+	assert.ErrorContains(t, cmd.Run(), "failed to check the token with the JFrog server (GET /artifactory/api/system/version): connection refused")
 }
 
 func TestVerify_ReferenceToken_Valid(t *testing.T) {
@@ -225,14 +225,14 @@ func TestVerify_ReferenceToken_Valid(t *testing.T) {
 	assert.Equal(t, fake.details, result.Payload)
 	assert.Nil(t, result.Header)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, result.Types)
-	assert.Zero(t, fake.rootCalls+fake.systemVersionCalls)
+	assert.Zero(t, fake.rootCalls+fake.artifactoryVersionCalls)
 	assert.Equal(t, 1, fake.detailsCalls)
 }
 
 func TestVerify_ReferenceToken_Rejected(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusUnauthorized: "reference token revoked: status 401 from GET /access/api/v1/tokens/me",
-		http.StatusForbidden:    "reference token rejected by Access server: status 403 from GET /access/api/v1/tokens/me",
+		http.StatusForbidden:    "reference token rejected by the JFrog server: status 403 from GET /access/api/v1/tokens/me",
 	} {
 		_, fake := validSetup(t)
 		fake.status = status
@@ -248,17 +248,17 @@ func TestVerify_ReferenceToken_Rejected(t *testing.T) {
 func TestVerify_ReferenceToken_ServerFailures(t *testing.T) {
 	_, fake := validSetup(t)
 	fake.status = http.StatusServiceUnavailable
-	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "unexpected response from Access server: status 503")
+	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "unexpected response from the JFrog server: status 503")
 
 	_, fake = validSetup(t)
 	fake.detailsErr = errors.New("connection refused")
-	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "failed to check the token with Access server")
+	assert.ErrorContains(t, newTestCommand("opaqueReferenceValue", fake).Run(), "failed to check the token with the JFrog server")
 
 	_, fake = validSetup(t)
 	cmd := newTestCommand("opaqueReferenceValue", fake)
 	cmd.SetServerDetails(&config.ServerDetails{})
 	assert.ErrorContains(t, cmd.Run(), "no JFrog server")
-	assert.Zero(t, fake.systemVersionCalls+fake.detailsCalls)
+	assert.Zero(t, fake.artifactoryVersionCalls+fake.detailsCalls)
 }
 
 func TestVerify_TypesComeFromScopesOnly(t *testing.T) {
@@ -306,7 +306,7 @@ func TestVerify_MalformedJWT_NoReferenceTokenHint(t *testing.T) {
 		err := newTestCommand(raw, fake).Run()
 		assert.ErrorContains(t, err, "failed to parse token", raw)
 		assert.NotContains(t, err.Error(), "reference token", raw)
-		assert.Zero(t, fake.rootCalls+fake.systemVersionCalls+fake.detailsCalls, raw)
+		assert.Zero(t, fake.rootCalls+fake.artifactoryVersionCalls+fake.detailsCalls, raw)
 	}
 }
 
@@ -326,7 +326,7 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 		switch r.URL.Path {
 		case "/access/api/v1/cert/root":
 			_, _ = w.Write([]byte(certB64))
-		case "/access/api/v1/system/version":
+		case "/artifactory/api/system/version":
 			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
 		case "/access/api/v1/tokens/me":
 			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
@@ -372,7 +372,7 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 			start := time.Now()
 			require.NoError(t, NewAccessTokenVerifyCommand().SetServerDetails(profile).SetToken(token).Run())
 			assert.Less(t, time.Since(start), 5*time.Second)
-			wantPath := "/access/api/v1/system/version"
+			wantPath := "/artifactory/api/system/version"
 			if !strings.Contains(token, ".") {
 				wantPath = "/access/api/v1/tokens/me"
 			}
