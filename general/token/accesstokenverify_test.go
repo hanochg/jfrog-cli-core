@@ -23,6 +23,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+var (
+	GenerateTestCert = generateTestCert
+	SignToken        = signToken
+	ValidHeader      = validHeader
+	ValidClaims      = validClaims
+)
+
 var testNow = time.Unix(1_800_000_000, 0)
 
 func generateTestCert(t *testing.T) (string, *rsa.PrivateKey) {
