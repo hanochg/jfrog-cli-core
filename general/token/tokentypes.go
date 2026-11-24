@@ -11,28 +11,32 @@ import (
 type TokenType string
 
 const (
-	TokenTypeAdmin          TokenType = "Admin Token"
-	TokenTypeIdentity       TokenType = "Identity Token"
-	TokenTypeGroups         TokenType = "Applied Permissions Groups Token"
-	TokenTypeRoles          TokenType = "Applied Permissions Roles Token"
-	TokenTypeEntitlements   TokenType = "Applied Permissions Entitlements Token"
-	TokenTypeScoped         TokenType = "Scoped Token"
-	TokenTypeConnectPairing TokenType = "Connect Pairing Token"
-	TokenTypeConnectDevice  TokenType = "Connect Device Token"
-	TokenTypeInternal       TokenType = "Internal Token"
-	TokenTypeUnknown        TokenType = "Unknown Token Type"
+	TokenTypeAdmin                 TokenType = "Admin Token"
+	TokenTypeIdentity              TokenType = "Identity Token"
+	TokenTypeGroups                TokenType = "Applied Permissions Groups Token"
+	TokenTypeRoles                 TokenType = "Applied Permissions Roles Token"
+	TokenTypeEntitlements          TokenType = "Applied Permissions Entitlements Token"
+	TokenTypeScoped                TokenType = "Scoped Token"
+	TokenTypeConnectPairing        TokenType = "Connect Pairing Token"
+	TokenTypeMissionControlPairing TokenType = "Mission Control Pairing Token"
+	TokenTypeConnectDevice         TokenType = "Connect Device Token"
+	TokenTypeInternal              TokenType = "Internal Token"
+	TokenTypeUnknown               TokenType = "Unknown Token Type"
 
-	userScope                 = "applied-permissions/user"
-	userScopePrefix           = userScope + ":"
-	rolesScopePrefix          = "applied-permissions/roles:"
-	entitlementsScopePrefix   = "applied-permissions/entitlements:"
-	legacyGroupsScopePrefix   = "member-of-groups:"
-	legacyUserScope           = legacyGroupsScopePrefix + "*"
-	legacyApiScope            = "api:*"
-	connectPairingScopePrefix = "internal:connect-agent-trust/pairing:"
-	connectDeviceScopePrefix  = "internal:connect-agent-trust/device:"
-	internalScopePrefix       = "internal:"
+	userScope                        = "applied-permissions/user"
+	userScopePrefix                  = userScope + ":"
+	rolesScopePrefix                 = "applied-permissions/roles:"
+	entitlementsScopePrefix          = "applied-permissions/entitlements:"
+	legacyGroupsScopePrefix          = "member-of-groups:"
+	legacyUserScope                  = legacyGroupsScopePrefix + "*"
+	legacyApiScope                   = "api:*"
+	connectPairingScopePrefix        = "internal:connect-agent-trust/pairing:"
+	connectDeviceScopePrefix         = "internal:connect-agent-trust/device:"
+	missionControlPairingScopePrefix = "internal:service-trust/pairing/mission-control:"
+	internalScopePrefix              = "internal:"
 )
+
+var namedInternalTypes = []TokenType{TokenTypeConnectPairing, TokenTypeMissionControlPairing, TokenTypeConnectDevice}
 
 var resourceScopePattern = regexp.MustCompile(`^(?:[a-zA-Z_-]+|\*):(?:\*|[^:/@]+(?:@[^:/]+)?(?:/[^:]+)?):(?:\*|[rwdamsx](?:,[rwdamsx])*)$`)
 
@@ -47,16 +51,22 @@ func IdentifyTokenTypes(scp string) []TokenType {
 	if len(types) == 0 {
 		return []TokenType{TokenTypeUnknown}
 	}
-	if (slices.Contains(types, TokenTypeConnectPairing) || slices.Contains(types, TokenTypeConnectDevice)) && !slices.Contains(types, TokenTypeInternal) {
+	if slices.ContainsFunc(types, isNamedInternalType) && !slices.Contains(types, TokenTypeInternal) {
 		types = append(types, TokenTypeInternal)
 	}
 	return types
+}
+
+func isNamedInternalType(tokenType TokenType) bool {
+	return slices.Contains(namedInternalTypes, tokenType)
 }
 
 func classifyScope(scope string) TokenType {
 	switch {
 	case strings.HasPrefix(scope, connectPairingScopePrefix):
 		return TokenTypeConnectPairing
+	case strings.HasPrefix(scope, missionControlPairingScopePrefix):
+		return TokenTypeMissionControlPairing
 	case strings.HasPrefix(scope, connectDeviceScopePrefix):
 		return TokenTypeConnectDevice
 	case strings.HasPrefix(scope, internalScopePrefix):
