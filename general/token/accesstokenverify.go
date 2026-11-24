@@ -118,6 +118,7 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	c.result.Format = TokenFormatJWT
 	c.result.Header = &parsed.Header
 	c.result.Payload = parsed.Claims
+	c.result.Types = IdentifyTokenTypes(parsed.Payload.Scp)
 	if err = accesstoken.ValidateHeader(parsed.Header); err != nil {
 		return err
 	}
@@ -134,11 +135,8 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	if err = accesstoken.ValidateExpiration(parsed.Payload, c.now()); err != nil {
 		return err
 	}
-	if _, err = getTokenDetails(client); err != nil {
-		return err
-	}
-	c.result.Types = IdentifyTokenTypes(parsed.Payload.Scp)
-	return nil
+	_, err = getTokenDetails(client)
+	return err
 }
 
 func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {

@@ -159,7 +159,8 @@ func TestVerify_Expired_BeforeServerCheck(t *testing.T) {
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow.Add(-2*time.Hour))), fake)
 	assert.ErrorContains(t, cmd.Run(), "token expired at")
 	assert.Zero(t, fake.detailsCalls)
-	assert.Nil(t, cmd.Result().Types)
+	assert.False(t, cmd.Result().Valid)
+	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 }
 
 func TestVerify_NoExpiry_Valid(t *testing.T) {
