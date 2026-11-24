@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -178,13 +177,18 @@ func TestVerify_RootCertFetchFails(t *testing.T) {
 }
 
 func TestVerify_ServerRejectsJWT(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+	for status, want := range map[int]string{
+		http.StatusUnauthorized: "token revoked: status 401 from GET /access/api/v1/tokens/me",
+		http.StatusForbidden:    "token rejected by Access server: status 403 from GET /access/api/v1/tokens/me",
+	} {
 		key, fake := validSetup(t)
 		fake.status = status
 		cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-		assert.EqualError(t, cmd.Run(), fmt.Sprintf("token rejected by Access server: status %d from GET /access/api/v1/tokens/me", status))
+		assert.EqualError(t, cmd.Run(), want)
 		assert.False(t, cmd.Result().Valid)
 		assert.Equal(t, TokenFormatJWT, cmd.Result().Format)
+		assert.NotEmpty(t, cmd.Result().Payload)
+		assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 	}
 }
 
@@ -217,14 +221,18 @@ func TestVerify_ReferenceToken_Valid(t *testing.T) {
 }
 
 func TestVerify_ReferenceToken_Rejected(t *testing.T) {
-	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+	for status, want := range map[int]string{
+		http.StatusUnauthorized: "reference token revoked: status 401 from GET /access/api/v1/tokens/me",
+		http.StatusForbidden:    "reference token rejected by Access server: status 403 from GET /access/api/v1/tokens/me",
+	} {
 		_, fake := validSetup(t)
 		fake.status = status
 		cmd := newTestCommand("opaqueReferenceValue", fake)
-		assert.EqualError(t, cmd.Run(), fmt.Sprintf("the provided value isn't a JWT, and the Access server didn't accept it as a reference token: status %d from GET /access/api/v1/tokens/me", status))
+		assert.EqualError(t, cmd.Run(), want)
 		assert.False(t, cmd.Result().Valid)
-		assert.Empty(t, cmd.Result().Format)
+		assert.Equal(t, TokenFormatReference, cmd.Result().Format)
 		assert.Nil(t, cmd.Result().Payload)
+		assert.Nil(t, cmd.Result().Types)
 	}
 }
 
@@ -297,7 +305,7 @@ func TestVerify_ApiKeyIsCheckedLikeAReferenceToken(t *testing.T) {
 	_, fake := validSetup(t)
 	fake.status = http.StatusUnauthorized
 	cmd := newTestCommand("AKCp8"+strings.Repeat("x", 68), fake)
-	assert.ErrorContains(t, cmd.Run(), "didn't accept it as a reference token")
+	assert.ErrorContains(t, cmd.Run(), "reference token revoked")
 	assert.Equal(t, 1, fake.detailsCalls)
 }
 

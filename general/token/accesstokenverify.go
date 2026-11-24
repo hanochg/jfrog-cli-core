@@ -140,6 +140,7 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 }
 
 func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
+	c.result.Format = TokenFormatReference
 	client, err := c.createAccessClient()
 	if err != nil {
 		return err
@@ -147,12 +148,11 @@ func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
 	details, err := getTokenDetails(client)
 	var rejected tokenRejectedError
 	if errors.As(err, &rejected) {
-		return errorutils.CheckErrorf("the provided value isn't a JWT, and the Access server didn't accept it as a reference token: status %d from %s", rejected.status, tokenDetailsCall)
+		return errorutils.CheckErrorf("reference %s", rejected.Error())
 	}
 	if err != nil {
 		return err
 	}
-	c.result.Format = TokenFormatReference
 	c.result.Payload = details
 	scope, _ := details["scope"].(string)
 	c.result.Types = IdentifyTokenTypes(scope)
@@ -184,6 +184,9 @@ func verifySignature(client accessClient, token string) error {
 type tokenRejectedError struct{ status int }
 
 func (e tokenRejectedError) Error() string {
+	if e.status == http.StatusUnauthorized {
+		return fmt.Sprintf("token revoked: status %d from %s", e.status, tokenDetailsCall)
+	}
 	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, tokenDetailsCall)
 }
 
