@@ -47,6 +47,9 @@ func IdentifyTokenTypes(scp string) []TokenType {
 	if len(types) == 0 {
 		return []TokenType{TokenTypeUnknown}
 	}
+	if (slices.Contains(types, TokenTypeConnectPairing) || slices.Contains(types, TokenTypeConnectDevice)) && !slices.Contains(types, TokenTypeInternal) {
+		types = append(types, TokenTypeInternal)
+	}
 	return types
 }
 
