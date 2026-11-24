@@ -72,13 +72,21 @@ func validClaims(now time.Time) map[string]interface{} {
 }
 
 type fakeAccessClient struct {
-	cert         string
-	rootErr      error
-	status       int
-	details      map[string]interface{}
-	detailsErr   error
-	rootCalls    int
-	detailsCalls int
+	cert           string
+	rootErr        error
+	status         int
+	details        map[string]interface{}
+	detailsErr     error
+	rootCalls      int
+	detailsCalls   int
+	readiness      int
+	readinessErr   error
+	readinessCalls int
+}
+
+func (f *fakeAccessClient) CheckReadiness() (int, error) {
+	f.readinessCalls++
+	return f.readiness, f.readinessErr
 }
 
 func (f *fakeAccessClient) GetRootCertificate() (string, error) {
@@ -104,7 +112,7 @@ func newTestCommand(token string, fake *fakeAccessClient) *AccessTokenVerifyComm
 func validSetup(t *testing.T) (*rsa.PrivateKey, *fakeAccessClient) {
 	certB64, key := generateTestCert(t)
 	details := map[string]interface{}{"token_id": "id-1", "subject": testUserSub, "scope": "applied-permissions/user"}
-	return key, &fakeAccessClient{cert: certB64, status: http.StatusOK, details: details}
+	return key, &fakeAccessClient{cert: certB64, status: http.StatusOK, details: details, readiness: http.StatusOK}
 }
 
 func TestVerify_ValidIdentityToken(t *testing.T) {
@@ -114,7 +122,8 @@ func TestVerify_ValidIdentityToken(t *testing.T) {
 	assert.True(t, cmd.Result().Valid)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 	assert.Equal(t, TokenFormatJWT, cmd.Result().Format)
-	assert.Equal(t, 1, fake.detailsCalls)
+	assert.Equal(t, 1, fake.readinessCalls)
+	assert.Zero(t, fake.detailsCalls)
 }
 
 func TestVerify_InvalidHeader_NoNetworkCalls(t *testing.T) {
@@ -123,7 +132,7 @@ func TestVerify_InvalidHeader_NoNetworkCalls(t *testing.T) {
 	header["ver"] = "1"
 	cmd := newTestCommand(signToken(t, key, header, validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), `expected ver "2"`)
-	assert.Zero(t, fake.rootCalls+fake.detailsCalls)
+	assert.Zero(t, fake.rootCalls+fake.readinessCalls+fake.detailsCalls)
 	assert.NotNil(t, cmd.Result().Payload)
 }
 
@@ -141,7 +150,7 @@ func TestVerify_BadSignature_TokenNotSentToServer(t *testing.T) {
 	_, otherKey := generateTestCert(t)
 	cmd := newTestCommand(signToken(t, otherKey, validHeader(), validClaims(testNow)), fake)
 	assert.ErrorContains(t, cmd.Run(), "invalid signature")
-	assert.Zero(t, fake.detailsCalls)
+	assert.Zero(t, fake.readinessCalls+fake.detailsCalls)
 }
 
 func TestVerify_MissingSub_BeforeServerCheck(t *testing.T) {
@@ -150,14 +159,14 @@ func TestVerify_MissingSub_BeforeServerCheck(t *testing.T) {
 	delete(claims, "sub")
 	cmd := newTestCommand(signToken(t, key, validHeader(), claims), fake)
 	assert.ErrorContains(t, cmd.Run(), "missing required field: sub")
-	assert.Zero(t, fake.detailsCalls)
+	assert.Zero(t, fake.readinessCalls+fake.detailsCalls)
 }
 
 func TestVerify_Expired_BeforeServerCheck(t *testing.T) {
 	key, fake := validSetup(t)
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow.Add(-2*time.Hour))), fake)
 	assert.ErrorContains(t, cmd.Run(), "token expired at")
-	assert.Zero(t, fake.detailsCalls)
+	assert.Zero(t, fake.readinessCalls+fake.detailsCalls)
 	assert.False(t, cmd.Result().Valid)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, cmd.Result().Types)
 }
@@ -178,11 +187,11 @@ func TestVerify_RootCertFetchFails(t *testing.T) {
 
 func TestVerify_ServerRejectsJWT(t *testing.T) {
 	for status, want := range map[int]string{
-		http.StatusUnauthorized: "token revoked: status 401 from GET /access/api/v1/tokens/me",
-		http.StatusForbidden:    "token rejected by Access server: status 403 from GET /access/api/v1/tokens/me",
+		http.StatusUnauthorized: "token revoked: status 401 from GET /access/api/v1/system/readiness",
+		http.StatusForbidden:    "token rejected by Access server: status 403 from GET /access/api/v1/system/readiness",
 	} {
 		key, fake := validSetup(t)
-		fake.status = status
+		fake.readiness = status
 		cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
 		assert.EqualError(t, cmd.Run(), want)
 		assert.False(t, cmd.Result().Valid)
@@ -194,16 +203,16 @@ func TestVerify_ServerRejectsJWT(t *testing.T) {
 
 func TestVerify_ServerUnexpectedStatus(t *testing.T) {
 	key, fake := validSetup(t)
-	fake.status = http.StatusServiceUnavailable
+	fake.readiness = http.StatusServiceUnavailable
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "unexpected response from Access server: status 503")
+	assert.ErrorContains(t, cmd.Run(), "unexpected response from Access server: status 503 from GET /access/api/v1/system/readiness")
 }
 
 func TestVerify_ServerCallFails(t *testing.T) {
 	key, fake := validSetup(t)
-	fake.detailsErr = errors.New("connection refused")
+	fake.readinessErr = errors.New("connection refused")
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "failed to check the token with Access server (GET /access/api/v1/tokens/me): connection refused")
+	assert.ErrorContains(t, cmd.Run(), "failed to check the token with Access server (GET /access/api/v1/system/readiness): connection refused")
 }
 
 func TestVerify_ReferenceToken_Valid(t *testing.T) {
@@ -216,7 +225,7 @@ func TestVerify_ReferenceToken_Valid(t *testing.T) {
 	assert.Equal(t, fake.details, result.Payload)
 	assert.Nil(t, result.Header)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, result.Types)
-	assert.Zero(t, fake.rootCalls)
+	assert.Zero(t, fake.rootCalls+fake.readinessCalls)
 	assert.Equal(t, 1, fake.detailsCalls)
 }
 
@@ -249,7 +258,7 @@ func TestVerify_ReferenceToken_ServerFailures(t *testing.T) {
 	cmd := newTestCommand("opaqueReferenceValue", fake)
 	cmd.SetServerDetails(&config.ServerDetails{})
 	assert.ErrorContains(t, cmd.Run(), "no JFrog server")
-	assert.Zero(t, fake.detailsCalls)
+	assert.Zero(t, fake.readinessCalls+fake.detailsCalls)
 }
 
 func TestVerify_TypesComeFromScopesOnly(t *testing.T) {
@@ -297,7 +306,7 @@ func TestVerify_MalformedJWT_NoReferenceTokenHint(t *testing.T) {
 		err := newTestCommand(raw, fake).Run()
 		assert.ErrorContains(t, err, "failed to parse token", raw)
 		assert.NotContains(t, err.Error(), "reference token", raw)
-		assert.Zero(t, fake.rootCalls+fake.detailsCalls, raw)
+		assert.Zero(t, fake.rootCalls+fake.readinessCalls+fake.detailsCalls, raw)
 	}
 }
 
@@ -312,13 +321,15 @@ func TestVerify_ApiKeyIsCheckedLikeAReferenceToken(t *testing.T) {
 func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 	t.Setenv(coreutils.HomeDir, t.TempDir())
 	certB64, key := generateTestCert(t)
-	var detailsAuth []string
+	var serverCalls []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/access/api/v1/cert/root":
 			_, _ = w.Write([]byte(certB64))
+		case "/access/api/v1/system/readiness":
+			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
 		case "/access/api/v1/tokens/me":
-			detailsAuth = append(detailsAuth, r.Header.Get("Authorization"))
+			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
 			_, _ = w.Write([]byte(`{"token_id":"id-1","subject":"jfac@01h/users/alice","scope":"applied-permissions/user"}`))
 		default:
 			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
@@ -354,14 +365,18 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 		"reference token":       "opaqueReferenceValue",
 	} {
 		t.Run(name, func(t *testing.T) {
-			detailsAuth = nil
+			serverCalls = nil
 			profile, err := config.GetSpecificConfig("login", true, true)
 			require.NoError(t, err)
 
 			start := time.Now()
 			require.NoError(t, NewAccessTokenVerifyCommand().SetServerDetails(profile).SetToken(token).Run())
 			assert.Less(t, time.Since(start), 5*time.Second)
-			assert.Equal(t, []string{"Bearer " + token}, detailsAuth)
+			wantPath := "/access/api/v1/system/readiness"
+			if !strings.Contains(token, ".") {
+				wantPath = "/access/api/v1/tokens/me"
+			}
+			assert.Equal(t, []string{wantPath + " Bearer " + token}, serverCalls)
 
 			saved, err := config.GetSpecificConfig("login", true, false)
 			require.NoError(t, err)

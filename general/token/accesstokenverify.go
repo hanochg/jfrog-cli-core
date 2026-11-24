@@ -17,6 +17,7 @@ import (
 const (
 	rootCertificateCall = "GET /access/api/v1/cert/root"
 	tokenDetailsCall    = "GET /access/api/v1/tokens/me"
+	readinessCall       = "GET /access/api/v1/system/readiness"
 )
 
 type TokenFormat string
@@ -37,6 +38,7 @@ type AccessTokenVerifyResult struct {
 
 type accessClient interface {
 	GetRootCertificate() (string, error)
+	CheckReadiness() (int, error)
 	GetOwnTokenDetails() (int, map[string]interface{}, error)
 }
 
@@ -135,8 +137,8 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	if err = accesstoken.ValidateExpiration(parsed.Payload, c.now()); err != nil {
 		return err
 	}
-	_, err = getTokenDetails(client)
-	return err
+	status, err := client.CheckReadiness()
+	return checkServerAnswer(status, err, readinessCall)
 }
 
 func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
@@ -181,26 +183,36 @@ func verifySignature(client accessClient, token string) error {
 	return accesstoken.ValidateSignature(token, key)
 }
 
-type tokenRejectedError struct{ status int }
+type tokenRejectedError struct {
+	status int
+	call   string
+}
 
 func (e tokenRejectedError) Error() string {
 	if e.status == http.StatusUnauthorized {
-		return fmt.Sprintf("token revoked: status %d from %s", e.status, tokenDetailsCall)
+		return fmt.Sprintf("token revoked: status %d from %s", e.status, e.call)
 	}
-	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, tokenDetailsCall)
+	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, e.call)
 }
 
 func getTokenDetails(client accessClient) (map[string]interface{}, error) {
 	status, details, err := client.GetOwnTokenDetails()
-	switch {
-	case err != nil:
-		return nil, errorutils.CheckErrorf("failed to check the token with Access server (%s): %s", tokenDetailsCall, err.Error())
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return nil, errorutils.CheckError(tokenRejectedError{status: status})
-	case status != http.StatusOK:
-		return nil, errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, tokenDetailsCall)
+	if err = checkServerAnswer(status, err, tokenDetailsCall); err != nil {
+		return nil, err
 	}
 	return details, nil
+}
+
+func checkServerAnswer(status int, err error, call string) error {
+	switch {
+	case err != nil:
+		return errorutils.CheckErrorf("failed to check the token with Access server (%s): %s", call, err.Error())
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		return errorutils.CheckError(tokenRejectedError{status: status, call: call})
+	case status != http.StatusOK:
+		return errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, call)
+	}
+	return nil
 }
 
 // Starts from blank details: copying the profile would carry its refresh token, and the refresh hook

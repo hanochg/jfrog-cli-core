@@ -22,6 +22,7 @@ func TestVerify_Exec_UsageReportingNeverRefreshes(t *testing.T) {
 		switch r.URL.Path {
 		case "/access/api/v1/cert/root":
 			_, _ = w.Write([]byte(certB64))
+		case "/access/api/v1/system/readiness":
 		case "/access/api/v1/tokens/me":
 			_, _ = w.Write([]byte(`{"token_id":"id-1"}`))
 		case "/artifactory/api/system/version":
