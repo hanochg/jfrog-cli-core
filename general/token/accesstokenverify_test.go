@@ -188,7 +188,7 @@ func TestVerify_RootCertFetchFails(t *testing.T) {
 func TestVerify_ServerRejectsJWT(t *testing.T) {
 	for status, want := range map[int]string{
 		http.StatusUnauthorized: "token revoked: status 401 from GET /access/api/v1/system/readiness",
-		http.StatusForbidden:    "token rejected by Access server: status 403 from GET /access/api/v1/system/readiness",
+		http.StatusForbidden:    "token revoked: status 403 from GET /access/api/v1/system/readiness",
 	} {
 		key, fake := validSetup(t)
 		fake.readiness = status

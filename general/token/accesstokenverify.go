@@ -184,12 +184,13 @@ func verifySignature(client accessClient, token string) error {
 }
 
 type tokenRejectedError struct {
-	status int
-	call   string
+	status  int
+	call    string
+	revoked bool
 }
 
 func (e tokenRejectedError) Error() string {
-	if e.status == http.StatusUnauthorized {
+	if e.revoked {
 		return fmt.Sprintf("token revoked: status %d from %s", e.status, e.call)
 	}
 	return fmt.Sprintf("token rejected by Access server: status %d from %s", e.status, e.call)
@@ -208,7 +209,8 @@ func checkServerAnswer(status int, err error, call string) error {
 	case err != nil:
 		return errorutils.CheckErrorf("failed to check the token with Access server (%s): %s", call, err.Error())
 	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		return errorutils.CheckError(tokenRejectedError{status: status, call: call})
+		revoked := status == http.StatusUnauthorized || call == readinessCall
+		return errorutils.CheckError(tokenRejectedError{status: status, call: call, revoked: revoked})
 	case status != http.StatusOK:
 		return errorutils.CheckErrorf("unexpected response from Access server: status %d from %s", status, call)
 	}
