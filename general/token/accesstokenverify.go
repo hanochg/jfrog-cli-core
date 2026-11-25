@@ -142,7 +142,7 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 		return err
 	}
 	_, err = client.GetArtifactoryVersion()
-	rejected, isRejected := rejectedToken(err)
+	rejected, isRejected := asAuthResponseError(err)
 	if audiences := parsed.Payload.AudAsStringSlice(); isRejected && !audienceIncludesArtifactory(audiences) {
 		return errorutils.CheckErrorf("token rejected by Artifactory: status %d from %s. The token's audience (%s) doesn't include Artifactory, which is the likely reason; the token may still be valid for that audience", rejected.StatusCode, artifactoryVersionCall, strings.Join(audiences, " "))
 	}
@@ -170,7 +170,7 @@ func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
 		return err
 	}
 	details, err := client.GetOwnTokenDetails()
-	if rejected, isRejected := rejectedToken(err); isRejected && rejected.StatusCode == http.StatusUnauthorized {
+	if rejected, isRejected := asAuthResponseError(err); isRejected && rejected.StatusCode == http.StatusUnauthorized {
 		return errorutils.CheckErrorf("reference token revoked: status %d from %s", rejected.StatusCode, tokenDetailsCall)
 	} else if isRejected {
 		return errorutils.CheckErrorf("reference token rejected by the JFrog server: status %d from %s", rejected.StatusCode, tokenDetailsCall)
@@ -207,8 +207,8 @@ func verifySignature(client accessClient, token string) error {
 	return accesstoken.ValidateSignature(token, key)
 }
 
-func rejectedToken(err error) (*services.TokenRejectedError, bool) {
-	var rejected *services.TokenRejectedError
+func asAuthResponseError(err error) (*services.AuthResponseError, bool) {
+	var rejected *services.AuthResponseError
 	return rejected, errors.As(err, &rejected)
 }
 

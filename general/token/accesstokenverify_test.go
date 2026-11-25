@@ -100,7 +100,7 @@ func fakeResponseError(status int, api string, body string) error {
 	case http.StatusOK:
 		return nil
 	case http.StatusUnauthorized, http.StatusForbidden:
-		return &services.TokenRejectedError{StatusCode: status, Api: api}
+		return &services.AuthResponseError{StatusCode: status, Api: api}
 	default:
 		return &errorutils.HttpResponseError{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Body: []byte(body)}
 	}
