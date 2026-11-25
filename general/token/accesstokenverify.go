@@ -14,7 +14,6 @@ import (
 	"github.com/jfrog/jfrog-client-go/access/services"
 	"github.com/jfrog/jfrog-client-go/auth/accesstoken"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
-	"github.com/jfrog/jfrog-client-go/utils/log"
 )
 
 const (
@@ -189,9 +188,6 @@ func (c *AccessTokenVerifyCommand) createAccessClient() (accessClient, error) {
 	if c.serverDetails == nil || c.serverDetails.Url == "" {
 		return nil, errorutils.CheckErrorf("no JFrog server with a platform URL is configured; run 'jf config add'")
 	}
-	if warning := insecureConnectionWarning(c.serverDetails); warning != "" {
-		log.Warn(warning)
-	}
 	return c.newAccessClient(tokenUnderInvestigationDetails(c.serverDetails, c.token))
 }
 
@@ -249,11 +245,4 @@ func tokenUnderInvestigationDetails(profile *config.ServerDetails, token string)
 	details.AccessToken = token
 	details.DisableTokenRefresh = true
 	return details
-}
-
-func insecureConnectionWarning(details *config.ServerDetails) string {
-	if !strings.HasPrefix(strings.ToLower(details.Url), "http://") {
-		return ""
-	}
-	return fmt.Sprintf("The server URL %s uses http://, so the token is sent unencrypted, and the server's answers can't be proven to come from your JFrog server.", details.Url)
 }

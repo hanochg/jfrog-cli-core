@@ -465,13 +465,6 @@ func TestTokenUnderInvestigationDetails_KeepsOnlyUrlAndClientCert(t *testing.T) 
 	}, tokenUnderInvestigationDetails(profile, "token"))
 }
 
-func TestInsecureConnectionWarning(t *testing.T) {
-	assert.Empty(t, insecureConnectionWarning(&config.ServerDetails{Url: "https://x/"}))
-	warning := insecureConnectionWarning(&config.ServerDetails{Url: "http://x/"})
-	assert.Contains(t, warning, "http://")
-	assert.Contains(t, warning, "unencrypted")
-}
-
 func TestVerify_ServerDetailsHasNoRefreshTokens(t *testing.T) {
 	key, fake := validSetup(t)
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
