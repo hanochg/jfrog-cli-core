@@ -1,6 +1,8 @@
 package token
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -9,6 +11,7 @@ import (
 
 	rtUtils "github.com/jfrog/jfrog-cli-core/v2/artifactory/utils"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
+	"github.com/jfrog/jfrog-client-go/access/services"
 	"github.com/jfrog/jfrog-client-go/auth/accesstoken"
 	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/jfrog/jfrog-client-go/utils/log"
@@ -39,8 +42,8 @@ type AccessTokenVerifyResult struct {
 
 type accessClient interface {
 	GetRootCertificate() (string, error)
-	CheckArtifactoryVersion() (int, error)
-	GetOwnTokenDetails() (int, map[string]interface{}, error)
+	GetArtifactoryVersion() (*services.ArtifactoryVersion, error)
+	GetOwnTokenDetails() (*services.TokenDetails, error)
 }
 
 type AccessTokenVerifyCommand struct {
@@ -138,13 +141,15 @@ func (c *AccessTokenVerifyCommand) verifyJWT() error {
 	if err = accesstoken.ValidateExpiration(parsed.Payload, c.now()); err != nil {
 		return err
 	}
-	status, err := client.CheckArtifactoryVersion()
-	err = checkServerAnswer(status, err, artifactoryVersionCall)
-	var rejected tokenRejectedError
-	if audiences := parsed.Payload.AudAsStringSlice(); errors.As(err, &rejected) && !audienceIncludesArtifactory(audiences) {
-		return errorutils.CheckErrorf("token rejected by Artifactory: status %d from %s. The token's audience (%s) doesn't include Artifactory, which is the likely reason; the token may still be valid for that audience", rejected.status, artifactoryVersionCall, strings.Join(audiences, " "))
+	_, err = client.GetArtifactoryVersion()
+	rejected, isRejected := rejectedToken(err)
+	if audiences := parsed.Payload.AudAsStringSlice(); isRejected && !audienceIncludesArtifactory(audiences) {
+		return errorutils.CheckErrorf("token rejected by Artifactory: status %d from %s. The token's audience (%s) doesn't include Artifactory, which is the likely reason; the token may still be valid for that audience", rejected.StatusCode, artifactoryVersionCall, strings.Join(audiences, " "))
 	}
-	return err
+	if isRejected {
+		return errorutils.CheckErrorf("token revoked: status %d from %s", rejected.StatusCode, artifactoryVersionCall)
+	}
+	return serverError(err, artifactoryVersionCall)
 }
 
 func audienceIncludesArtifactory(audiences []string) bool {
@@ -164,17 +169,19 @@ func (c *AccessTokenVerifyCommand) verifyReferenceToken() error {
 	if err != nil {
 		return err
 	}
-	details, err := getTokenDetails(client)
-	var rejected tokenRejectedError
-	if errors.As(err, &rejected) {
-		return errorutils.CheckErrorf("reference %s", rejected.Error())
+	details, err := client.GetOwnTokenDetails()
+	if rejected, isRejected := rejectedToken(err); isRejected && rejected.StatusCode == http.StatusUnauthorized {
+		return errorutils.CheckErrorf("reference token revoked: status %d from %s", rejected.StatusCode, tokenDetailsCall)
+	} else if isRejected {
+		return errorutils.CheckErrorf("reference token rejected by the JFrog server: status %d from %s", rejected.StatusCode, tokenDetailsCall)
 	}
-	if err != nil {
+	if err = serverError(err, tokenDetailsCall); err != nil {
 		return err
 	}
-	c.result.Payload = details
-	scope, _ := details["scope"].(string)
-	c.result.Types = IdentifyTokenTypes(scope)
+	if c.result.Payload, err = detailsAsPayload(details); err != nil {
+		return err
+	}
+	c.result.Types = IdentifyTokenTypes(details.Scope)
 	return nil
 }
 
@@ -200,38 +207,36 @@ func verifySignature(client accessClient, token string) error {
 	return accesstoken.ValidateSignature(token, key)
 }
 
-type tokenRejectedError struct {
-	status  int
-	call    string
-	revoked bool
+func rejectedToken(err error) (*services.TokenRejectedError, bool) {
+	var rejected *services.TokenRejectedError
+	return rejected, errors.As(err, &rejected)
 }
 
-func (e tokenRejectedError) Error() string {
-	if e.revoked {
-		return fmt.Sprintf("token revoked: status %d from %s", e.status, e.call)
-	}
-	return fmt.Sprintf("token rejected by the JFrog server: status %d from %s", e.status, e.call)
-}
-
-func getTokenDetails(client accessClient) (map[string]interface{}, error) {
-	status, details, err := client.GetOwnTokenDetails()
-	if err = checkServerAnswer(status, err, tokenDetailsCall); err != nil {
-		return nil, err
-	}
-	return details, nil
-}
-
-func checkServerAnswer(status int, err error, call string) error {
+func serverError(err error, call string) error {
+	var responseErr *errorutils.HttpResponseError
 	switch {
-	case err != nil:
+	case err == nil:
+		return nil
+	case errors.As(err, &responseErr):
+		message := fmt.Sprintf("unexpected response from the JFrog server: status %d from %s", responseErr.StatusCode, call)
+		if body := strings.Join(strings.Fields(string(responseErr.Body)), " "); body != "" {
+			message += ": " + body
+		}
+		return errorutils.CheckError(errors.New(message))
+	default:
 		return errorutils.CheckErrorf("failed to check the token with the JFrog server (%s): %s", call, err.Error())
-	case status == http.StatusUnauthorized || status == http.StatusForbidden:
-		revoked := status == http.StatusUnauthorized || call == artifactoryVersionCall
-		return errorutils.CheckError(tokenRejectedError{status: status, call: call, revoked: revoked})
-	case status != http.StatusOK:
-		return errorutils.CheckErrorf("unexpected response from the JFrog server: status %d from %s", status, call)
 	}
-	return nil
+}
+
+func detailsAsPayload(details *services.TokenDetails) (map[string]interface{}, error) {
+	data, err := json.Marshal(details)
+	if err != nil {
+		return nil, errorutils.CheckError(err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	payload := map[string]interface{}{}
+	return payload, errorutils.CheckError(decoder.Decode(&payload))
 }
 
 // Starts from blank details: copying the profile would carry its refresh token, and the refresh hook

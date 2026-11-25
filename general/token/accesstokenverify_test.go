@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,8 @@ import (
 
 	"github.com/jfrog/jfrog-cli-core/v2/utils/config"
 	"github.com/jfrog/jfrog-cli-core/v2/utils/coreutils"
+	"github.com/jfrog/jfrog-client-go/access/services"
+	"github.com/jfrog/jfrog-client-go/utils/errorutils"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -82,18 +85,36 @@ type fakeAccessClient struct {
 	cert                    string
 	rootErr                 error
 	status                  int
-	details                 map[string]interface{}
+	details                 *services.TokenDetails
 	detailsErr              error
 	rootCalls               int
 	detailsCalls            int
 	version                 int
 	versionErr              error
 	artifactoryVersionCalls int
+	errorBody               string
 }
 
-func (f *fakeAccessClient) CheckArtifactoryVersion() (int, error) {
+func fakeResponseError(status int, api string, body string) error {
+	switch status {
+	case http.StatusOK:
+		return nil
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return &services.TokenRejectedError{StatusCode: status, Api: api}
+	default:
+		return &errorutils.HttpResponseError{StatusCode: status, Status: fmt.Sprintf("%d %s", status, http.StatusText(status)), Body: []byte(body)}
+	}
+}
+
+func (f *fakeAccessClient) GetArtifactoryVersion() (*services.ArtifactoryVersion, error) {
 	f.artifactoryVersionCalls++
-	return f.version, f.versionErr
+	if f.versionErr != nil {
+		return nil, f.versionErr
+	}
+	if err := fakeResponseError(f.version, "artifactory/api/system/version", f.errorBody); err != nil {
+		return nil, err
+	}
+	return &services.ArtifactoryVersion{Version: "7.179.0"}, nil
 }
 
 func (f *fakeAccessClient) GetRootCertificate() (string, error) {
@@ -101,12 +122,15 @@ func (f *fakeAccessClient) GetRootCertificate() (string, error) {
 	return f.cert, f.rootErr
 }
 
-func (f *fakeAccessClient) GetOwnTokenDetails() (int, map[string]interface{}, error) {
+func (f *fakeAccessClient) GetOwnTokenDetails() (*services.TokenDetails, error) {
 	f.detailsCalls++
-	if f.status != http.StatusOK {
-		return f.status, nil, f.detailsErr
+	if f.detailsErr != nil {
+		return nil, f.detailsErr
 	}
-	return f.status, f.details, f.detailsErr
+	if err := fakeResponseError(f.status, "api/v1/tokens/me", f.errorBody); err != nil {
+		return nil, err
+	}
+	return f.details, nil
 }
 
 func newTestCommand(token string, fake *fakeAccessClient) *AccessTokenVerifyCommand {
@@ -118,7 +142,7 @@ func newTestCommand(token string, fake *fakeAccessClient) *AccessTokenVerifyComm
 
 func validSetup(t *testing.T) (*rsa.PrivateKey, *fakeAccessClient) {
 	certB64, key := generateTestCert(t)
-	details := map[string]interface{}{"token_id": "id-1", "subject": testUserSub, "scope": "applied-permissions/user"}
+	details := &services.TokenDetails{TokenId: "id-1", Subject: testUserSub, Scope: "applied-permissions/user"}
 	return key, &fakeAccessClient{cert: certB64, status: http.StatusOK, details: details, version: http.StatusOK}
 }
 
@@ -233,8 +257,9 @@ func TestVerify_ArtifactoryRejectsTokenOutsideItsAudience(t *testing.T) {
 func TestVerify_ServerUnexpectedStatus(t *testing.T) {
 	key, fake := validSetup(t)
 	fake.version = http.StatusServiceUnavailable
+	fake.errorBody = "{\n  \"errors\": [{\"message\": \"maintenance\"}]\n}"
 	cmd := newTestCommand(signToken(t, key, validHeader(), validClaims(testNow)), fake)
-	assert.ErrorContains(t, cmd.Run(), "unexpected response from the JFrog server: status 503 from GET /artifactory/api/system/version")
+	assert.EqualError(t, cmd.Run(), `unexpected response from the JFrog server: status 503 from GET /artifactory/api/system/version: { "errors": [{"message": "maintenance"}] }`)
 }
 
 func TestVerify_ServerCallFails(t *testing.T) {
@@ -251,7 +276,7 @@ func TestVerify_ReferenceToken_Valid(t *testing.T) {
 	result := cmd.Result()
 	assert.True(t, result.Valid)
 	assert.Equal(t, TokenFormatReference, result.Format)
-	assert.Equal(t, fake.details, result.Payload)
+	assert.Equal(t, map[string]interface{}{"token_id": "id-1", "subject": testUserSub, "scope": "applied-permissions/user"}, result.Payload)
 	assert.Nil(t, result.Header)
 	assert.Equal(t, []TokenType{TokenTypeIdentity}, result.Types)
 	assert.Zero(t, fake.rootCalls+fake.artifactoryVersionCalls)
@@ -311,15 +336,14 @@ func TestVerify_TypesComeFromScopesOnly(t *testing.T) {
 
 func TestVerify_ReferenceToken_TypesFromServerDetails(t *testing.T) {
 	for _, tc := range []struct {
-		details map[string]interface{}
+		details *services.TokenDetails
 		want    []TokenType
 	}{
-		{map[string]interface{}{"subject": "jfrt@01h", "scope": AdminScope}, []TokenType{TokenTypeAdmin}},
-		{map[string]interface{}{"subject": "jfrt@01h", "scope": `internal:x:r "applied-permissions/groups:group 1"`}, []TokenType{TokenTypeInternal, TokenTypeGroups}},
-		{map[string]interface{}{"subject": "my_token", "scope": GroupsScopePrefix + "readers"}, []TokenType{TokenTypeGroups}},
-		{map[string]interface{}{"token_id": "id-1"}, []TokenType{TokenTypeUnknown}},
-		{map[string]interface{}{"token_id": "id-1", "scope": []interface{}{"applied-permissions/user"}}, []TokenType{TokenTypeUnknown}},
-		{map[string]interface{}{"token_id": "id-1", "scope": " "}, []TokenType{TokenTypeUnknown}},
+		{&services.TokenDetails{Subject: "jfrt@01h", Scope: AdminScope}, []TokenType{TokenTypeAdmin}},
+		{&services.TokenDetails{Subject: "jfrt@01h", Scope: `internal:x:r "applied-permissions/groups:group 1"`}, []TokenType{TokenTypeInternal, TokenTypeGroups}},
+		{&services.TokenDetails{Subject: "my_token", Scope: GroupsScopePrefix + "readers"}, []TokenType{TokenTypeGroups}},
+		{&services.TokenDetails{TokenId: "id-1"}, []TokenType{TokenTypeUnknown}},
+		{&services.TokenDetails{TokenId: "id-1", Scope: " "}, []TokenType{TokenTypeUnknown}},
 	} {
 		_, fake := validSetup(t)
 		fake.details = tc.details
@@ -357,6 +381,7 @@ func TestVerify_RefreshableProfile_NeverRefreshes(t *testing.T) {
 			_, _ = w.Write([]byte(certB64))
 		case "/artifactory/api/system/version":
 			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
+			_, _ = w.Write([]byte(`{"version":"7.179.0"}`))
 		case "/access/api/v1/tokens/me":
 			serverCalls = append(serverCalls, r.URL.Path+" "+r.Header.Get("Authorization"))
 			_, _ = w.Write([]byte(`{"token_id":"id-1","subject":"jfac@01h/users/alice","scope":"applied-permissions/user"}`))
